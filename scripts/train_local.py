@@ -92,21 +92,31 @@ def main(args):
 
     optimizer = torch.optim.Adam(trainable, lr=args.lr)
 
+    # Linear warmup: scale LR from 0 → 1 over warmup_steps, then hold at 1
+    def lr_lambda(step):
+        if args.warmup_steps <= 0:
+            return 1.0
+        return min(1.0, step / args.warmup_steps)
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
     images, level_probs = load_real_batch(
         args.data_path, args.image_folder, args.preprocessor_path,
         args.batch_size, device, torch.float32,
     )
 
-    print(f"\n{'Step':>5}  {'Loss':>10}")
-    print("-" * 18)
+    print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
+    print("-" * 30)
     for step in range(1, args.steps + 1):
         optimizer.zero_grad()
         output = model(images=images, level_probs=level_probs)
         loss = output.loss
         loss.backward()
         optimizer.step()
+        scheduler.step()
         if step % args.log_every == 0 or step == 1:
-            print(f"{step:>5}  {loss.item():>10.6f}")
+            current_lr = scheduler.get_last_lr()[0]
+            print(f"{step:>5}  {loss.item():>10.6f}  {current_lr:>10.2e}")
 
     print("\nDone.")
 
@@ -154,6 +164,8 @@ if __name__ == "__main__":
     parser.add_argument("--preprocessor-path", default="preprocessor",
                         help="Path to image preprocessor config (AutoImageProcessor)")
     parser.add_argument("--steps", type=int, default=50)
+    parser.add_argument("--warmup-steps", type=int, default=5,
+                        help="LR linearly ramps from 0 to --lr over this many steps (default: 5)")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=5)
