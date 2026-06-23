@@ -1,8 +1,9 @@
 import argparse
+from dataclasses import asdict, dataclass
 import json
 import numpy as np
 import os
-import random
+from typing import List, Optional
 from scipy.stats import norm, pearsonr, spearmanr
 
 
@@ -13,37 +14,25 @@ def parse_args():
     return args
 
 
-questions = [
-    "What do you think about the quality of this image?",
-    "Can you rate the quality of this picture?",
-    "Can you judge the quality of this image?",
-    "How would you rate the quality of this image?",
-    "How would you judge the quality of this image?",
-    "What is your quality rating for this image?",
-    "What's your opinion on the quality of this picture?",
-    "Rate the quality of this image.",
-    "Could you evaluate the quality of this image?",
-    "How do you assess the quality of this image?",
-]
-
-
 def calculate_srcc_plcc(pred, mos):
     srcc, _ = spearmanr(pred, mos)
     plcc, _ = pearsonr(pred, mos)
     return srcc, plcc
 
 
-def get_level(mos, min_mos, max_mos):
-    eps = 1e-8
-    texts = ["bad", "poor", "fair", "good", "excellent"]
-    for idx in range(1, len(texts) + 1):
-        mos_left = min_mos + (idx - 1) / 5 * (max_mos - min_mos) - eps
-        mos_right = min_mos + idx / 5 * (max_mos - min_mos) + eps
-        if mos > mos_left and mos <= mos_right:
-            level = idx
-            break
-    text = texts[level - 1]
-    return text
+@dataclass
+class SoftLabelSample:
+    id: str
+    image: str
+    gt_score: float
+    gt_score_norm: float
+    std: float
+    std_norm: float
+    level_probs: Optional[List[float]] = None
+    level_probs_org: Optional[List[float]] = None
+
+    def to_json_dict(self):
+        return {key: value for key, value in asdict(self).items() if value is not None}
 
 
 def adjust_gaussian_bar(probs, score):
@@ -111,10 +100,6 @@ def main(cfg):
             # print(idx, img)
             continue
 
-        text = get_level(mos, min_mos, max_mos)
-        query = random.choice(questions)
-        resp = answer.replace("{}", text)
-
         # norm mos and std
         mos_norm = 4 * (mos - min_mos) / (max_mos - min_mos) + 1  # [0, 1] -> [1, 5]
         std_norm = 4 * std / (max_mos - min_mos)
@@ -129,14 +114,14 @@ def main(cfg):
                 # better for larger std dataset (see Appendix) like KonIQ and KADID
                 assert density_type == "pdf"
                 prob = norm.pdf(x, loc=mos_norm, scale=std_norm)
-            probs.append(prob)
+            probs.append(float(prob))
 
         mos_rec = np.inner(np.array(probs), np.array([5, 4, 3, 2, 1]))
         raw_diff = abs(mos_rec - mos_norm)
         raw_diffs.append(raw_diff)
 
         alpha, beta = adjust_gaussian_bar(probs, mos_norm)
-        probs_norm = [max(_ * alpha + beta, 0) for _ in probs]
+        probs_norm = [float(max(_ * alpha + beta, 0)) for _ in probs]
         mos_rec = np.inner(np.array(probs_norm), np.array([5, 4, 3, 2, 1]))
         diff = abs(mos_rec - mos_norm)
 
@@ -153,42 +138,29 @@ def main(cfg):
         alphas.append(alpha)
         betas.append(beta)
 
-        meta = {
-            "id": os.path.basename(img) + f"->{mos_str}",
-            "image": os.path.join(img_dir, img),
-            "gt_score": mos,
-            "gt_score_norm": mos_norm,
-            "level_probs_org": probs,
-            "level_probs": probs_norm,
-            "std": std,
-            "std_norm": std_norm,
-        }
+        meta = SoftLabelSample(
+            id=os.path.basename(img) + f"->{mos_str}",
+            image=os.path.join(img_dir, img),
+            gt_score=mos,
+            gt_score_norm=float(mos_norm),
+            std=std,
+            std_norm=float(std_norm),
+            level_probs=probs_norm if training else None,
+            level_probs_org=probs if training else None,
+        )
         if training:
-            conversations = [
-                {
-                    "from": "human",
-                    "value": query + "\n<|image|>",
-                },
-                {
-                    "from": "gpt",
-                    "value": resp,
-                },
-            ]
-            meta["conversations"] = conversations
             train_metas.append(meta)
         else:
-            del meta["level_probs_org"]
-            del meta["level_probs"]
             test_metas.append(meta)
 
     print("=" * 100)
     print(f"save {len(train_metas)} into {save_train}")
     with open(save_train, "w") as fw:
-        fw.write(json.dumps(train_metas, indent=4))
+        fw.write(json.dumps([meta.to_json_dict() for meta in train_metas], indent=4))
 
     print(f"save {len(test_metas)} into {save_test}")
     with open(save_test, "w") as fw:
-        fw.write(json.dumps(test_metas, indent=4))
+        fw.write(json.dumps([meta.to_json_dict() for meta in test_metas], indent=4))
 
     srcc, plcc = calculate_srcc_plcc(preds, gts)
     print("srcc:", srcc, "plcc:", plcc)
@@ -203,7 +175,5 @@ if __name__ == "__main__":
     args = parse_args()
     with open(args.config) as fr:
         cfg = json.load(fr)
-    answer = cfg["answer"]
     for dataset in cfg["dataset_params"]:
-        random.seed(131)
         main(cfg["dataset_params"][dataset])

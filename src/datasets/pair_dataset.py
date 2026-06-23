@@ -39,11 +39,21 @@ class CollatedPairItem:
 class PairDataset(Dataset):
     """Dataset for pairwise quality ranking."""
 
+    _REQUIRED = ("gt_score", "std", "level_probs")
+
     def __init__(self, data_paths, data_weights, data_args):
         super().__init__()
         dataset_list = []
         for data_path, data_weight in zip(data_paths, data_weights):
             data_list = json.load(open(data_path, "r"))
+            n_before = len(data_list)
+            data_list = [s for s in data_list if all(s.get(k) is not None for k in self._REQUIRED)]
+            n_skipped = n_before - len(data_list)
+            if n_skipped:
+                rank0_print(
+                    f"WARNING: skipped {n_skipped}/{n_before} samples missing "
+                    f"{self._REQUIRED} in {data_path}"
+                )
             dataset_list.append(data_list * data_weight)
         self.dataset_list = dataset_list
 
@@ -108,9 +118,9 @@ class PairDataset(Dataset):
         return PairSampleItem(
             image=image,
             task_type=sample.get("task_type", "score"),
-            gt_score=sample.get("gt_score", -10000.0),
-            std=sample.get("std", -10000.0),
-            level_probs=sample.get("level_probs", [-10000.0] * 5),
+            gt_score=sample.get("gt_score_norm", sample["gt_score"]),
+            std=sample.get("std_norm", sample["std"]),
+            level_probs=sample["level_probs"],
         )
 
 

@@ -53,9 +53,12 @@ class ViTForIQA(nn.Module):
         return probs, scores, stds
 
     def _softkl_loss(self, logits, level_probs):
-        probs = torch.softmax(logits, dim=-1)
-        target = level_probs.to(dtype=logits.dtype, device=logits.device)
-        return F.kl_div(torch.log(probs + 1e-8), target, reduction="batchmean")
+        log_probs = F.log_softmax(logits, dim=-1)
+        target = level_probs.to(dtype=logits.dtype, device=logits.device).clamp(min=0)
+        # gen_soft_label.py clips negatives to 0, which can leave the distribution summing
+        # to slightly more than 1.  Renormalise so the KL target is a proper distribution.
+        target = target / target.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        return F.kl_div(log_probs, target, reduction="batchmean")
 
     def _rating_loss(
         self,

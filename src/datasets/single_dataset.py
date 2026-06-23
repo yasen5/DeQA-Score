@@ -15,7 +15,7 @@ from .utils import expand2square, rank0_print
 class SingleSampleItem:
     image: torch.Tensor
     task_type: str
-    level_probs: List[float]
+    level_probs: List[float] # ground truth probability of each score [excellent, good, fair, poor, bad]
 
 
 class SingleDataset(Dataset):
@@ -26,6 +26,11 @@ class SingleDataset(Dataset):
         list_data_dict = []
         for data_path, data_weight in zip(data_paths, data_weights):
             data_dict = json.load(open(data_path, "r"))
+            n_before = len(data_dict)
+            data_dict = [s for s in data_dict if s.get("level_probs") is not None]
+            n_skipped = n_before - len(data_dict)
+            if n_skipped:
+                rank0_print(f"WARNING: skipped {n_skipped}/{n_before} samples missing 'level_probs' in {data_path}")
             list_data_dict += data_dict * data_weight
 
         rank0_print("Formatting inputs...Skip in lazy mode")
@@ -67,7 +72,7 @@ class SingleDataset(Dataset):
                 return SingleSampleItem(
                     image=image,
                     task_type=sample.get("task_type", "score"),
-                    level_probs=sample.get("level_probs", [-10000.0] * 5),
+                    level_probs=sample["level_probs"],
                 )
             except Exception as ex:
                 print(ex)

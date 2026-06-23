@@ -1,20 +1,29 @@
 """
-Minimal local training script — no deepspeed, no disk images required.
+Minimal local training script — no deepspeed required.
 
-Overfits a small fixed synthetic batch to confirm:
+Trains the head on a fixed batch drawn from a soft-label JSON file produced by
+build_soft_labels/gen_soft_label.py, to confirm:
   - backbone weights load correctly
   - ViT is frozen (only ln + head train)
   - loss decreases
 
 Usage:
-    python3 scripts/train_local.py [--steps 50] [--batch-size 4] [--lr 1e-3]
+    python3 scripts/train_local.py \\
+        --data-path ../../Data-DeQA-Score/KONIQ/metas/train_koniq_7k_new.json \\
+        --image-folder ../../Data-DeQA-Score \\
+        [--steps 50] [--batch-size 4] [--lr 1e-3]
 """
 
 import argparse
+import json
+import os
 import sys
+import tempfile
+import types
 
 import torch
-import torch.nn.functional as F
+from PIL import Image
+from transformers import AutoImageProcessor
 
 sys.path.insert(0, ".")
 from src.model import ViTForIQA
@@ -28,13 +37,30 @@ def get_device():
     return torch.device("cpu")
 
 
-def make_synthetic_batch(batch_size, image_size, device, dtype):
-    """Fixed batch of random images + soft quality labels."""
-    torch.manual_seed(0)
-    images = torch.randn(batch_size, 3, image_size, image_size, device=device, dtype=dtype)
-    # Random soft labels that sum to 1 per sample
-    raw = torch.rand(batch_size, 5, device=device, dtype=dtype)
-    level_probs = raw / raw.sum(dim=-1, keepdim=True)
+def load_real_batch(data_path, image_folder, preprocessor_path, batch_size, device, dtype):
+    """Load a fixed batch from a soft-label JSON file (gen_soft_label.py output)."""
+    with open(data_path) as f:
+        samples = json.load(f)
+
+    samples = [s for s in samples if "level_probs" in s][:batch_size]
+    if len(samples) < batch_size:
+        raise ValueError(
+            f"Not enough samples with level_probs in {data_path}: "
+            f"found {len(samples)}, need {batch_size}"
+        )
+
+    processor = AutoImageProcessor.from_pretrained(preprocessor_path)
+
+    images, level_probs = [], []
+    for s in samples:
+        img_path = os.path.join(image_folder, s["image"])
+        img = Image.open(img_path).convert("RGB")
+        pixel_values = processor(img, return_tensors="pt")["pixel_values"][0]
+        images.append(pixel_values)
+        level_probs.append(s["level_probs"])
+
+    images = torch.stack(images).to(device=device, dtype=dtype)
+    level_probs = torch.tensor(level_probs, dtype=dtype, device=device)
     return images, level_probs
 
 
@@ -43,6 +69,14 @@ def main(args):
     print(f"Device: {device}")
 
     model = ViTForIQA.from_pretrained(args.model_path, torch_dtype=None)
+    if args.head_path:
+        head_sd = torch.load(args.head_path, map_location="cpu")
+        missing, unexpected = model.load_state_dict(head_sd, strict=False)
+        if missing:
+            print(f"[head] Missing keys: {missing}")
+        if unexpected:
+            print(f"[head] Unexpected keys: {unexpected}")
+        print(f"Head weights loaded from {args.head_path}")
     model = model.to(device=device, dtype=torch.float32)
     model.train()
 
@@ -61,8 +95,10 @@ def main(args):
 
     optimizer = torch.optim.Adam(trainable, lr=args.lr)
 
-    image_size = 448   # matches MplugOwlVisionConfig default
-    images, level_probs = make_synthetic_batch(args.batch_size, image_size, device, torch.float32)
+    images, level_probs = load_real_batch(
+        args.data_path, args.image_folder, args.preprocessor_path,
+        args.batch_size, device, torch.float32,
+    )
 
     print(f"\n{'Step':>5}  {'Loss':>10}")
     print("-" * 18)
@@ -77,24 +113,61 @@ def main(args):
 
     print("\nDone. Loss should be decreasing over steps.")
 
+    head_sd = {
+        k: v.cpu()
+        for k, v in model.state_dict().items()
+        if k in {"ln.weight", "ln.bias", "head.weight", "head.bias"}
+    }
+
     if args.save_head:
-        head_sd = {
-            k: v.cpu()
-            for k, v in model.state_dict().items()
-            if k in {"ln.weight", "ln.bias", "head.weight", "head.bias"}
-        }
         torch.save(head_sd, args.save_head)
         print(f"Head weights saved to {args.save_head}")
+
+    if args.run_demo:
+        import demo as demo_mod
+
+        _tmp_head = None
+        head_path = args.save_head
+        if head_path is None:
+            _tmp = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+            _tmp.close()
+            head_path = _tmp.name
+            _tmp_head = head_path
+            torch.save(head_sd, head_path)
+
+        demo_args = types.SimpleNamespace(
+            model_path=args.model_path,
+            head_path=head_path,
+            preprocessor_path=args.preprocessor_path,
+            out=args.demo_out,
+        )
+        print(f"\nRunning demo → {args.demo_out}")
+        demo_mod.main(demo_args)
+
+        if _tmp_head:
+            os.unlink(_tmp_head)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", default="checkpoints/DeQA-Score-Mix3")
+    parser.add_argument("--data-path", required=True,
+                        help="JSON file generated by build_soft_labels/gen_soft_label.py")
+    parser.add_argument("--image-folder", required=True,
+                        help="Base directory prepended to each sample's 'image' field")
+    parser.add_argument("--preprocessor-path", default="preprocessor",
+                        help="Path to image preprocessor config (AutoImageProcessor)")
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=5)
+    parser.add_argument("--head-path", default=None, metavar="PATH",
+                        help="Load previously saved head weights before training")
     parser.add_argument("--save-head", default=None, metavar="PATH",
                         help="Save trained head weights to this path after training")
+    parser.add_argument("--run-demo", action="store_true",
+                        help="Run demo.py with the trained model after training")
+    parser.add_argument("--demo-out", default="demo.png", metavar="PATH",
+                        help="Output path for the demo plot (default: demo.png)")
     args = parser.parse_args()
     main(args)
