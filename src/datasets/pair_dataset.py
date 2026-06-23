@@ -15,7 +15,6 @@ from .utils import expand2square, rank0_print
 @dataclass
 class PairSampleItem:
     image: torch.Tensor
-    task_type: str
     gt_score: float
     std: float
     level_probs: List[float]
@@ -30,7 +29,6 @@ class PairSample:
 @dataclass
 class CollatedPairItem:
     images: torch.Tensor
-    task_types: List[str]
     gt_scores: torch.Tensor
     stds: torch.Tensor
     level_probs: torch.Tensor
@@ -117,7 +115,6 @@ class PairDataset(Dataset):
 
         return PairSampleItem(
             image=image,
-            task_type=sample.get("task_type", "score"),
             gt_score=sample.get("gt_score_norm", sample["gt_score"]),
             std=sample.get("std_norm", sample["std"]),
             level_probs=sample["level_probs"],
@@ -144,7 +141,6 @@ class DataCollatorForPairDataset:
 
         return CollatedPairItem(
             images=images,
-            task_types=[inst.task_type for inst in instances],
             gt_scores=torch.tensor([inst.gt_score for inst in instances]),
             stds=torch.tensor([inst.std for inst in instances]),
             level_probs=torch.tensor([inst.level_probs for inst in instances]),

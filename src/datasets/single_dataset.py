@@ -14,7 +14,6 @@ from .utils import expand2square, rank0_print
 @dataclass
 class SingleSampleItem:
     image: torch.Tensor
-    task_type: str
     level_probs: List[float] # ground truth probability of each score [excellent, good, fair, poor, bad]
 
 
@@ -71,7 +70,6 @@ class SingleDataset(Dataset):
 
                 return SingleSampleItem(
                     image=image,
-                    task_type=sample.get("task_type", "score"),
                     level_probs=sample["level_probs"],
                 )
             except Exception as ex:
@@ -92,7 +90,6 @@ class DataCollatorForSupervisedDataset:
         return {
             "input_type": "single",
             "images": images,
-            "task_types": [inst.task_type for inst in instances],
             "level_probs": torch.tensor([inst.level_probs for inst in instances]),
         }
 
