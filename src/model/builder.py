@@ -13,7 +13,7 @@ def load_pretrained_model(
     preprocessor_path=None,
 ):
     if torch_dtype is None:
-        torch_dtype = torch.float16
+        torch_dtype = torch.float16 if device.startswith("cuda") else torch.float32
 
     model = ViTForIQA.from_pretrained(model_path, torch_dtype=torch_dtype)
     model = model.to(device)

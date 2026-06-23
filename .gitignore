@@ -21,3 +21,6 @@ res_*
 
 # mac hidden
 *.DS_Store*
+checkpoints/
+commands_i_ran.md
+*.png

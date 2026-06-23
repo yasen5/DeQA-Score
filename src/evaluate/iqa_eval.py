@@ -103,7 +103,15 @@ if __name__ == "__main__":
     parser.add_argument("--save-dir", type=str, default="results")
     parser.add_argument("--level-names", type=str, required=True, nargs="+")
     parser.add_argument("--with-prob", type=bool, default=False)
-    parser.add_argument("--device", type=str, default="cuda:0")
+    parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--batch-size", type=int, default=16)
     args = parser.parse_args()
+    if args.device is None:
+        import torch
+        if torch.cuda.is_available():
+            args.device = "cuda:0"
+        elif torch.backends.mps.is_available():
+            args.device = "mps"
+        else:
+            args.device = "cpu"
     main(args)

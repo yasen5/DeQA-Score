@@ -64,7 +64,6 @@ class MplugOwlVisionConfig(PretrainedConfig):
 class ViTIQAConfig(PretrainedConfig):
     r"""
     Top-level configuration for a pure ViT image quality assessment model.
-    No language model or visual abstractor — just ViT backbone + 5-way quality head.
     """
 
     model_type = "vit_iqa"

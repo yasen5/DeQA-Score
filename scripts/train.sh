@@ -38,7 +38,7 @@ deepspeed --include localhost:$1 --master_port 6688 src/train/train_mem.py \
     --logging_steps 1 \
     --tf32 True \
     --gradient_checkpointing True \
-    --freeze_vision_model False \
+    --freeze_vision_model True \
     --dataloader_num_workers 4 \
     --lazy_preprocess True \
     --report_to tensorboard
