@@ -68,15 +68,12 @@ def main(args):
     device = get_device()
     print(f"Device: {device}")
 
+    args.model_path = os.path.abspath(args.model_path)
+    if args.save_head is None:
+        args.save_head = os.path.join(args.model_path, "head.bin")
+
+    # from_pretrained already loads head.bin from model_path if it exists
     model = ViTForIQA.from_pretrained(args.model_path, torch_dtype=None)
-    if args.head_path:
-        head_sd = torch.load(args.head_path, map_location="cpu")
-        missing, unexpected = model.load_state_dict(head_sd, strict=False)
-        if missing:
-            print(f"[head] Missing keys: {missing}")
-        if unexpected:
-            print(f"[head] Unexpected keys: {unexpected}")
-        print(f"Head weights loaded from {args.head_path}")
     model = model.to(device=device, dtype=torch.float32)
     model.train()
 
@@ -111,7 +108,7 @@ def main(args):
         if step % args.log_every == 0 or step == 1:
             print(f"{step:>5}  {loss.item():>10.6f}")
 
-    print("\nDone. Loss should be decreasing over steps.")
+    print("\nDone.")
 
     head_sd = {
         k: v.cpu()
@@ -119,9 +116,8 @@ def main(args):
         if k in {"ln.weight", "ln.bias", "head.weight", "head.bias"}
     }
 
-    if args.save_head:
-        torch.save(head_sd, args.save_head)
-        print(f"Head weights saved to {args.save_head}")
+    torch.save(head_sd, args.save_head)
+    print(f"Head weights saved to {args.save_head}")
 
     if args.run_demo:
         import demo as demo_mod
@@ -161,10 +157,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--log-every", type=int, default=5)
-    parser.add_argument("--head-path", default=None, metavar="PATH",
-                        help="Load previously saved head weights before training")
     parser.add_argument("--save-head", default=None, metavar="PATH",
-                        help="Save trained head weights to this path after training")
+                        help="Save trained head weights (default: <model-path>/head.bin)")
     parser.add_argument("--run-demo", action="store_true",
                         help="Run demo.py with the trained model after training")
     parser.add_argument("--demo-out", default="demo.png", metavar="PATH",

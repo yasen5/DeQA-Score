@@ -167,10 +167,17 @@ class ViTForIQA(nn.Module):
         if os.path.exists(weights_file):
             state_dict = torch.load(weights_file, map_location="cpu")
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
-            if missing:
-                print(f"[ViTForIQA] Missing keys: {missing}")
+            head_keys = {"ln.weight", "ln.bias", "head.weight", "head.bias"}
+            still_missing = [k for k in missing if k in head_keys]
+            if still_missing:
+                print(f"[ViTForIQA] Missing keys: {still_missing}")
             if unexpected:
                 print(f"[ViTForIQA] Unexpected keys: {unexpected}")
+        head_file = os.path.join(model_path, "head.bin")
+        if os.path.exists(head_file):
+            head_sd = torch.load(head_file, map_location="cpu", weights_only=True)
+            model.load_state_dict(head_sd, strict=False)
+            print(f"[ViTForIQA] Head weights loaded from {head_file}")
         if torch_dtype is not None:
             model = model.to(torch_dtype)
         return model
