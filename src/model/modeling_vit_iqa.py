@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.utils import ModelOutput
 
-from .configuration_mplug_owl2 import MplugOwlVisionConfig, ViTIQAConfig
+from .configuration_mplug_owl2 import ViTIQAConfig
 from .visual_encoder import MplugOwlVisionModel
 
 
@@ -31,9 +31,8 @@ class ViTForIQA(nn.Module):
     def __init__(self, config: ViTIQAConfig):
         super().__init__()
         self.config = config
-        vit_cfg = MplugOwlVisionConfig(**config.vision_config)
-        self.vision_model = MplugOwlVisionModel(vit_cfg)
-        hidden = vit_cfg.hidden_size
+        self.vision_model = MplugOwlVisionModel(config)
+        hidden = config.hidden_size
         self.ln = nn.LayerNorm(hidden)
         self.head = nn.Linear(hidden, config.num_quality_levels)
 
@@ -97,7 +96,7 @@ class ViTForIQA(nn.Module):
         logits = self.head(self.ln(cls))               # (B, 5)
         probs, scores, stds = self._probs_scores_stds(logits)
         kl_loss = None
-        if level_probs is not None and getattr(self.config, "softkl_loss", False):
+        if level_probs is not None and self.config.softkl_loss:
             kl_loss = self._softkl_loss(logits, level_probs)
         return logits, probs, scores, stds, kl_loss
 
@@ -121,7 +120,7 @@ class ViTForIQA(nn.Module):
         gt_scores_A = item_A.gt_scores.to(scores_A)
         gt_scores_B = item_B.gt_scores.to(scores_B)
 
-        if getattr(self.config, "continuous_rating_loss", True):
+        if self.config.continuous_rating_loss:
             gt_stds_A = item_A.stds.to(stds_A)
             gt_stds_B = item_B.stds.to(stds_B)
             loss_rank = self._rating_loss(
@@ -131,12 +130,10 @@ class ViTForIQA(nn.Module):
         else:
             loss_rank = self._binary_rating_loss(scores_A, gt_scores_A, scores_B, gt_scores_B)
 
-        weight_rank = getattr(self.config, "weight_rank", 1.0)
-        loss = weight_rank * loss_rank
+        loss = self.config.weight_rank * loss_rank
 
-        if getattr(self.config, "softkl_loss", False) and kl_A is not None:
-            weight_softkl = getattr(self.config, "weight_softkl", 1.0)
-            loss = loss + weight_softkl * (kl_A + kl_B)
+        if self.config.softkl_loss and kl_A is not None:
+            loss = loss + self.config.weight_softkl * (kl_A + kl_B)
 
         try:
             if dist.get_rank() == 0:
