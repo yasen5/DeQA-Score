@@ -3,13 +3,37 @@ import json
 import os
 import random
 from dataclasses import dataclass
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
 from .utils import expand2square, rank0_print
+
+
+@dataclass
+class PairSampleItem:
+    image: torch.Tensor
+    task_type: str
+    gt_score: float
+    std: float
+    level_probs: List[float]
+
+
+@dataclass
+class PairSample:
+    item_A: PairSampleItem
+    item_B: PairSampleItem
+
+
+@dataclass
+class CollatedPairItem:
+    images: torch.Tensor
+    task_types: List[str]
+    gt_scores: torch.Tensor
+    stds: torch.Tensor
+    level_probs: torch.Tensor
 
 
 class PairDataset(Dataset):
@@ -57,13 +81,13 @@ class PairDataset(Dataset):
                     if idx_sample_B != idx_sample:
                         break
                 item_B = self._get_one(idx_dataset, idx_sample_B)
-                return {"item_A": item_A, "item_B": item_B}
+                return PairSample(item_A=item_A, item_B=item_B)
             except Exception as ex:
                 print(ex)
                 i = self.next_rand()
                 continue
 
-    def _get_one(self, idx_dataset, idx_sample) -> Dict[str, torch.Tensor]:
+    def _get_one(self, idx_dataset, idx_sample) -> PairSampleItem:
         sample = self.dataset_list[idx_dataset][idx_sample]
         image_folder = self.data_args.image_folder
         processor = self.data_args.image_processor
@@ -81,40 +105,40 @@ class PairDataset(Dataset):
             crop_size = processor.crop_size
             image = torch.zeros(3, crop_size["height"], crop_size["width"])
 
-        return {
-            "image": image,
-            "task_type": sample.get("task_type", "score"),
-            "gt_score": sample.get("gt_score", -10000.0),
-            "std": sample.get("std", -10000.0),
-            "level_probs": sample.get("level_probs", [-10000.0] * 5),
-        }
+        return PairSampleItem(
+            image=image,
+            task_type=sample.get("task_type", "score"),
+            gt_score=sample.get("gt_score", -10000.0),
+            std=sample.get("std", -10000.0),
+            level_probs=sample.get("level_probs", [-10000.0] * 5),
+        )
 
 
 @dataclass
 class DataCollatorForPairDataset:
     """Collate paired samples into a batch."""
 
-    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        instances_A = [inst["item_A"] for inst in instances]
-        instances_B = [inst["item_B"] for inst in instances]
+    def __call__(self, instances: Sequence[PairSample]) -> Dict:
+        instances_A = [inst.item_A for inst in instances]
+        instances_B = [inst.item_B for inst in instances]
         return {
             "input_type": "pair",
             "item_A": self._collate_one(instances_A),
             "item_B": self._collate_one(instances_B),
         }
 
-    def _collate_one(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        images = [inst["image"] for inst in instances]
+    def _collate_one(self, instances: Sequence[PairSampleItem]) -> CollatedPairItem:
+        images = [inst.image for inst in instances]
         if all(x.shape == images[0].shape for x in images):
             images = torch.stack(images)
 
-        return {
-            "images": images,
-            "task_types": [inst["task_type"] for inst in instances],
-            "gt_scores": torch.tensor([inst["gt_score"] for inst in instances]),
-            "stds": torch.tensor([inst["std"] for inst in instances]),
-            "level_probs": torch.tensor([inst["level_probs"] for inst in instances]),
-        }
+        return CollatedPairItem(
+            images=images,
+            task_types=[inst.task_type for inst in instances],
+            gt_scores=torch.tensor([inst.gt_score for inst in instances]),
+            stds=torch.tensor([inst.std for inst in instances]),
+            level_probs=torch.tensor([inst.level_probs for inst in instances]),
+        )
 
 
 def make_pair_data_module(data_args) -> Dict:

@@ -2,13 +2,20 @@ import json
 import os
 import random
 from dataclasses import dataclass
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
 from .utils import expand2square, rank0_print
+
+
+@dataclass
+class SingleSampleItem:
+    image: torch.Tensor
+    task_type: str
+    level_probs: List[float]
 
 
 class SingleDataset(Dataset):
@@ -57,11 +64,11 @@ class SingleDataset(Dataset):
                     crop_size = processor.crop_size
                     image = torch.zeros(3, crop_size["height"], crop_size["width"])
 
-                return {
-                    "image": image,
-                    "task_type": sample.get("task_type", "score"),
-                    "level_probs": sample.get("level_probs", [-10000.0] * 5),
-                }
+                return SingleSampleItem(
+                    image=image,
+                    task_type=sample.get("task_type", "score"),
+                    level_probs=sample.get("level_probs", [-10000.0] * 5),
+                )
             except Exception as ex:
                 print(ex)
                 i = self.next_rand()
@@ -72,16 +79,16 @@ class SingleDataset(Dataset):
 class DataCollatorForSupervisedDataset:
     """Collate single-image samples into a batch."""
 
-    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        images = [inst["image"] for inst in instances]
+    def __call__(self, instances: Sequence[SingleSampleItem]) -> Dict:
+        images = [inst.image for inst in instances]
         if all(x.shape == images[0].shape for x in images):
             images = torch.stack(images)
 
         return {
             "input_type": "single",
             "images": images,
-            "task_types": [inst["task_type"] for inst in instances],
-            "level_probs": torch.tensor([inst["level_probs"] for inst in instances]),
+            "task_types": [inst.task_type for inst in instances],
+            "level_probs": torch.tensor([inst.level_probs for inst in instances]),
         }
 
 

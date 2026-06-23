@@ -112,15 +112,15 @@ class ViTForIQA(nn.Module):
         return ViTIQAOutput(loss=kl_loss, logits=logits, scores=scores, stds=stds)
 
     def _forward_pair(self, item_A, item_B, **kwargs):
-        logits_A, _, scores_A, stds_A, kl_A = self._encode_one(item_A["images"], item_A.get("level_probs"))
-        logits_B, _, scores_B, stds_B, kl_B = self._encode_one(item_B["images"], item_B.get("level_probs"))
+        logits_A, _, scores_A, stds_A, kl_A = self._encode_one(item_A.images, item_A.level_probs)
+        logits_B, _, scores_B, stds_B, kl_B = self._encode_one(item_B.images, item_B.level_probs)
 
-        gt_scores_A = item_A["gt_scores"].to(scores_A)
-        gt_scores_B = item_B["gt_scores"].to(scores_B)
+        gt_scores_A = item_A.gt_scores.to(scores_A)
+        gt_scores_B = item_B.gt_scores.to(scores_B)
 
         if getattr(self.config, "continuous_rating_loss", True):
-            gt_stds_A = item_A["stds"].to(stds_A)
-            gt_stds_B = item_B["stds"].to(stds_B)
+            gt_stds_A = item_A.stds.to(stds_A)
+            gt_stds_B = item_B.stds.to(stds_B)
             loss_rank = self._rating_loss(
                 scores_A, stds_A, gt_scores_A, gt_stds_A,
                 scores_B, stds_B, gt_scores_B, gt_stds_B,
