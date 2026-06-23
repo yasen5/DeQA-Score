@@ -1,14 +1,13 @@
 #!/bin/bash
 export PYTHONPATH=./:$PYTHONPATH
 
-LOAD="../ModelZoo/mplug-owl2-llama2-7b/"
+# Path to a ViTForIQA checkpoint to fine-tune from (leave empty to train from scratch).
+VIT_MODEL_PATH="../ModelZoo/vit-iqa-pretrained/"
 
 deepspeed --include localhost:$1 --master_port 6688 src/train/train_mem.py \
     --deepspeed scripts/zero3.json \
-    --model_name_or_path $LOAD \
-    --version v1 \
+    --vit_model_path $VIT_MODEL_PATH \
     --dataset_type pair \
-    --level_prefix "The quality of the image is" \
     --level_names excellent good fair poor bad \
     --softkl_loss True \
     --weight_rank 1.0 \
@@ -23,9 +22,8 @@ deepspeed --include localhost:$1 --master_port 6688 src/train/train_mem.py \
                  ../Data-DeQA-Score/KADID10K/metas/train_kadid_8k.json \
     --data_weights 1 1 1 \
     --image_folder ../Data-DeQA-Score/ \
-    --output_dir ./checkpoints/deqa_mix3_rank1.0_next0.05_kl1.0/ \
+    --output_dir ./checkpoints/vit-iqa-mix3/ \
     --image_aspect_ratio pad \
-    --group_by_modality_length True \
     --bf16 True \
     --num_train_epochs 3 \
     --per_device_train_batch_size 16 \
@@ -39,9 +37,7 @@ deepspeed --include localhost:$1 --master_port 6688 src/train/train_mem.py \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
     --tf32 True \
-    --model_max_length 2048 \
     --gradient_checkpointing True \
-    --tune_visual_abstractor True \
     --freeze_vision_model False \
     --dataloader_num_workers 4 \
     --lazy_preprocess True \

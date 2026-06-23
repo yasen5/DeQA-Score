@@ -1,0 +1,181 @@
+import os
+from dataclasses import dataclass
+from typing import Optional
+
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers.utils import ModelOutput
+
+from .configuration_mplug_owl2 import MplugOwlVisionConfig, ViTIQAConfig
+from .visual_encoder import MplugOwlVisionModel
+
+
+@dataclass
+class ViTIQAOutput(ModelOutput):
+    loss: Optional[torch.Tensor] = None
+    logits: Optional[torch.Tensor] = None
+    scores: Optional[torch.Tensor] = None
+    stds: Optional[torch.Tensor] = None
+
+
+class ViTForIQA(nn.Module):
+    """
+    Pure Vision Transformer image quality assessment model.
+
+    Pipeline: image → MplugOwlVisionModel (ViT) → CLS token → LayerNorm → Linear(hidden, 5)
+    Score: softmax(logits) @ [5, 4, 3, 2, 1]
+    """
+
+    def __init__(self, config: ViTIQAConfig):
+        super().__init__()
+        self.config = config
+        vit_cfg = MplugOwlVisionConfig(**config.vision_config)
+        self.vision_model = MplugOwlVisionModel(vit_cfg)
+        hidden = vit_cfg.hidden_size
+        self.ln = nn.LayerNorm(hidden)
+        self.head = nn.Linear(hidden, config.num_quality_levels)
+
+    # ------------------------------------------------------------------ #
+    # Internal helpers                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _weights(self, device, dtype):
+        return torch.tensor([5., 4., 3., 2., 1.], device=device, dtype=dtype)
+
+    def _probs_scores_stds(self, logits):
+        probs = torch.softmax(logits, dim=-1)
+        w = self._weights(logits.device, logits.dtype)
+        scores = probs @ w
+        variances = (w.unsqueeze(0) - scores.unsqueeze(1)) ** 2
+        stds = torch.sqrt((probs * variances).sum(dim=-1))
+        return probs, scores, stds
+
+    def _softkl_loss(self, logits, level_probs):
+        probs = torch.softmax(logits, dim=-1)
+        target = level_probs.to(dtype=logits.dtype, device=logits.device)
+        return F.kl_div(torch.log(probs + 1e-8), target, reduction="batchmean")
+
+    def _rating_loss(
+        self,
+        pred_scores_A, pred_stds_A, gt_scores_A, gt_stds_A,
+        pred_scores_B, pred_stds_B, gt_scores_B, gt_stds_B,
+    ):
+        eps = 1e-8
+        if self.config.use_fix_std:
+            # Assume unit std (sqrt(2) denominator comes from sqrt(1^2 + 1^2))
+            pred = 0.5 * (1 + torch.erf((pred_scores_A - pred_scores_B) / 2))
+        else:
+            pred_var = pred_stds_A ** 2 + pred_stds_B ** 2 + eps
+            if self.config.detach_pred_std:
+                pred_var = pred_var.detach()
+            pred = 0.5 * (1 + torch.erf((pred_scores_A - pred_scores_B) / torch.sqrt(2 * pred_var)))
+        gt_var = gt_stds_A ** 2 + gt_stds_B ** 2 + eps
+        gt = 0.5 * (1 + torch.erf((gt_scores_A - gt_scores_B) / torch.sqrt(2 * gt_var))).to(pred.device)
+        gt = gt.detach()
+        loss = (1 - (pred * gt + eps).sqrt() - ((1 - pred) * (1 - gt) + eps).sqrt()).mean()
+        return loss
+
+    def _binary_rating_loss(self, pred_scores_A, gt_scores_A, pred_scores_B, gt_scores_B):
+        pred = 0.5 * (1 + torch.erf((pred_scores_A - pred_scores_B) / 2))
+        gt = (gt_scores_A > gt_scores_B).to(pred.dtype).to(pred.device).detach()
+        if self.config.binary_rating_loss == "bce":
+            return F.binary_cross_entropy(pred, gt)
+        elif self.config.binary_rating_loss == "fidelity":
+            loss_1 = 1 - pred[gt == 1].sqrt()
+            loss_2 = 1 - (1 - pred[gt == 0]).sqrt()
+            return (loss_1.sum() + loss_2.sum()) / pred_scores_A.shape[0]
+        raise NotImplementedError(f"Unknown binary_rating_loss: {self.config.binary_rating_loss}")
+
+    def _encode_one(self, images, level_probs=None):
+        """Run the ViT on one batch and return (logits, probs, scores, stds, kl_loss)."""
+        cls = self.vision_model(images).pooler_output  # (B, hidden)
+        logits = self.head(self.ln(cls))               # (B, 5)
+        probs, scores, stds = self._probs_scores_stds(logits)
+        kl_loss = None
+        if level_probs is not None and getattr(self.config, "softkl_loss", False):
+            kl_loss = self._softkl_loss(logits, level_probs)
+        return logits, probs, scores, stds, kl_loss
+
+    # ------------------------------------------------------------------ #
+    # Public forward                                                       #
+    # ------------------------------------------------------------------ #
+
+    def forward(self, input_type=None, **kwargs):
+        if input_type == "pair":
+            return self._forward_pair(**kwargs)
+        return self._forward_single(**kwargs)
+
+    def _forward_single(self, images, level_probs=None, **kwargs):
+        logits, probs, scores, stds, kl_loss = self._encode_one(images, level_probs)
+        return ViTIQAOutput(loss=kl_loss, logits=logits, scores=scores, stds=stds)
+
+    def _forward_pair(self, item_A, item_B, **kwargs):
+        logits_A, _, scores_A, stds_A, kl_A = self._encode_one(item_A["images"], item_A.get("level_probs"))
+        logits_B, _, scores_B, stds_B, kl_B = self._encode_one(item_B["images"], item_B.get("level_probs"))
+
+        gt_scores_A = item_A["gt_scores"].to(scores_A)
+        gt_scores_B = item_B["gt_scores"].to(scores_B)
+
+        if getattr(self.config, "continuous_rating_loss", True):
+            gt_stds_A = item_A["stds"].to(stds_A)
+            gt_stds_B = item_B["stds"].to(stds_B)
+            loss_rank = self._rating_loss(
+                scores_A, stds_A, gt_scores_A, gt_stds_A,
+                scores_B, stds_B, gt_scores_B, gt_stds_B,
+            )
+        else:
+            loss_rank = self._binary_rating_loss(scores_A, gt_scores_A, scores_B, gt_scores_B)
+
+        weight_rank = getattr(self.config, "weight_rank", 1.0)
+        loss = weight_rank * loss_rank
+
+        if getattr(self.config, "softkl_loss", False) and kl_A is not None:
+            weight_softkl = getattr(self.config, "weight_softkl", 1.0)
+            loss = loss + weight_softkl * (kl_A + kl_B)
+
+        try:
+            if dist.get_rank() == 0:
+                print(f"[loss | ranking: {round(loss_rank.item(), 6)}]")
+        except Exception:
+            pass
+
+        return ViTIQAOutput(loss=loss)
+
+    # ------------------------------------------------------------------ #
+    # Inference                                                            #
+    # ------------------------------------------------------------------ #
+
+    def score(self, images):
+        """Return quality scores in [1, 5] for a batch of preprocessed images."""
+        with torch.inference_mode():
+            cls = self.vision_model(images).pooler_output
+            logits = self.head(self.ln(cls))
+            _, scores, _ = self._probs_scores_stds(logits)
+            return scores
+
+    # ------------------------------------------------------------------ #
+    # Serialisation                                                        #
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def from_pretrained(cls, model_path, torch_dtype=torch.float16, device_map=None, **kwargs):
+        config = ViTIQAConfig.from_pretrained(model_path)
+        model = cls(config)
+        weights_file = os.path.join(model_path, "pytorch_model.bin")
+        if os.path.exists(weights_file):
+            state_dict = torch.load(weights_file, map_location="cpu")
+            missing, unexpected = model.load_state_dict(state_dict, strict=False)
+            if missing:
+                print(f"[ViTForIQA] Missing keys: {missing}")
+            if unexpected:
+                print(f"[ViTForIQA] Unexpected keys: {unexpected}")
+        if torch_dtype is not None:
+            model = model.to(torch_dtype)
+        return model
+
+    def save_pretrained(self, output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        self.config.save_pretrained(output_dir)
+        torch.save(self.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))

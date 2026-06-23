@@ -1,2 +1,2 @@
-from .model import MPLUGOwl2LlamaForCausalLM
+from .model import ViTForIQA
 from .evaluate import Scorer
