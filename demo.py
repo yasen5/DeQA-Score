@@ -20,6 +20,7 @@ import json
 import os
 import random
 import sys
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
@@ -31,12 +32,18 @@ from PIL import Image
 from transformers.models.clip.image_processing_clip import CLIPImageProcessor
 
 sys.path.insert(0, ".")
+from src.constants import (
+    DEMO_ARG_SPECS,
+    DEMO_GT_COLOR,
+    DEMO_LEVELS,
+    DEMO_PRED_COLOR,
+)
 from src.mm_utils import expand2square
 from src.model import ViTForIQA
 
-LEVELS = ["excellent", "good", "fair", "poor", "bad"]
-PRED_COLOR = "#3498db"
-GT_COLOR   = "#e67e22"
+LEVELS = DEMO_LEVELS
+PRED_COLOR = DEMO_PRED_COLOR
+GT_COLOR = DEMO_GT_COLOR
 
 
 # ------------------------------------------------------------------ #
@@ -86,6 +93,8 @@ def load_model(model_path, head_path, device):
         missing, unexpected = model.load_state_dict(head_sd, strict=False)
         if unexpected:
             print(f"[demo] Unexpected head keys: {unexpected}")
+        print(f"[demo] Head weights loaded from explicit path {head_path}")
+    print(f"[demo] Resolved checkpoint: {getattr(model, 'resolved_checkpoint_path', model_path)}")
     model = model.to(device=device, dtype=torch.float32)
     model.eval()
     return model
@@ -170,19 +179,13 @@ def make_plot(samples, pred_probs, pred_scores, out_path):
 # Main                                                                 #
 # ------------------------------------------------------------------ #
 
-_DEFAULT_JSON = os.path.join(
-    os.path.dirname(__file__),
-    "../data/Data-DeQA-Score/KADID10K/metas/train_kadid_8k_new.json",
-)
-_DEFAULT_ROOT = os.path.join(
-    os.path.dirname(__file__),
-    "../data/Data-DeQA-Score",
-)
-
-
 def main(args):
     device = get_device()
     print(f"Device: {device}")
+
+    repo_root = Path(__file__).resolve().parent
+    args.dataset_json = str((repo_root / args.dataset_json).resolve())
+    args.data_root = str((repo_root / args.data_root).resolve())
 
     processor = CLIPImageProcessor.from_pretrained(args.preprocessor_path)
     model     = load_model(args.model_path, args.head_path, device)
@@ -206,13 +209,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path",        default="checkpoints/DeQA-Score-Mix3")
-    parser.add_argument("--head-path",         default="checkpoints/DeQA-Score-Mix3/head.bin")
-    parser.add_argument("--preprocessor-path", default="./preprocessor")
-    parser.add_argument("--dataset-json",      default=_DEFAULT_JSON)
-    parser.add_argument("--data-root",         default=_DEFAULT_ROOT)
-    parser.add_argument("--num-samples",       type=int, default=4)
-    parser.add_argument("--seed",              type=int, default=0)
-    parser.add_argument("--out",               default="demo.png")
+    for arg_spec in DEMO_ARG_SPECS:
+        parser.add_argument(*arg_spec["flags"], **arg_spec["kwargs"])
     args = parser.parse_args()
     main(args)

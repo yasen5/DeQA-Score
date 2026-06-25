@@ -10,10 +10,19 @@ and trained from scratch while the ViT backbone is frozen.
 
 import argparse
 import os
+import sys
 
 import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from src.constants import (
+    CHECKPOINT_MODEL_FILENAME,
+    DEQA_SCORE_MIX3_HF_REPO_ID,
+    DEQA_SCORE_MIX3_VIT_SHARD_FILENAME,
+    DOWNLOAD_BACKBONE_ARG_SPECS,
+)
 
 
 def main(output_dir):
@@ -21,8 +30,8 @@ def main(output_dir):
 
     print("Downloading shard 4 (contains all ViT weights)...")
     shard_path = hf_hub_download(
-        repo_id="zhiyuanyou/DeQA-Score-Mix3",
-        filename="model-00004-of-00004.safetensors",
+        repo_id=DEQA_SCORE_MIX3_HF_REPO_ID,
+        filename=DEQA_SCORE_MIX3_VIT_SHARD_FILENAME,
     )
 
     print("Loading shard...")
@@ -37,17 +46,14 @@ def main(output_dir):
 
     print(f"Extracted {len(vit_state_dict)} ViT parameter tensors")
 
-    out_path = os.path.join(output_dir, "pytorch_model.bin")
+    out_path = os.path.join(output_dir, CHECKPOINT_MODEL_FILENAME)
     torch.save(vit_state_dict, out_path)
     print(f"Saved backbone weights to {out_path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--output-dir",
-        default="checkpoints/DeQA-Score-Mix3",
-        help="Directory to write pytorch_model.bin into",
-    )
+    for arg_spec in DOWNLOAD_BACKBONE_ARG_SPECS:
+        parser.add_argument(*arg_spec["flags"], **arg_spec["kwargs"])
     args = parser.parse_args()
     main(args.output_dir)

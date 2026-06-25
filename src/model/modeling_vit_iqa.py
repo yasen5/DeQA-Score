@@ -1,5 +1,8 @@
 import os
+import hashlib
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -8,6 +11,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.utils import ModelOutput
 
+from src.constants import (
+    CHECKPOINT_AUTO_DIR_PREFIX,
+    CHECKPOINT_CONFIG_FILENAME,
+    CHECKPOINT_CONFIG_METADATA_FIELDS,
+    CHECKPOINT_HASH_PREFIX_LENGTH,
+    CHECKPOINT_HEAD_FILENAME,
+    CHECKPOINT_METADATA_FILENAME,
+    CHECKPOINT_METADATA_VERSION,
+    CHECKPOINT_MODEL_FILENAME,
+    CHECKPOINTS_DIRNAME,
+    IQA_HEAD_STATE_KEYS,
+)
 from .configuration_mplug_owl2 import ViTIQAConfig
 from .visual_encoder import MplugOwlVisionModel
 
@@ -160,21 +175,143 @@ class ViTForIQA(nn.Module):
     # ------------------------------------------------------------------ #
 
     @classmethod
+    def _config_metadata(cls, config):
+        return {field: getattr(config, field) for field in CHECKPOINT_CONFIG_METADATA_FIELDS}
+
+    @classmethod
+    def _config_hash(cls, config):
+        payload = json.dumps(cls._config_metadata(config), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _metadata_for_config(cls, config):
+        return {
+            "metadata_version": CHECKPOINT_METADATA_VERSION,
+            "config_hash": cls._config_hash(config),
+            "config": cls._config_metadata(config),
+            "files": {
+                "model": CHECKPOINT_MODEL_FILENAME,
+                "head": CHECKPOINT_HEAD_FILENAME,
+            },
+        }
+
+    @classmethod
+    def _write_metadata(cls, checkpoint_dir, config):
+        metadata_file = Path(checkpoint_dir) / CHECKPOINT_METADATA_FILENAME
+        with metadata_file.open("w", encoding="utf-8") as f:
+            json.dump(cls._metadata_for_config(config), f, indent=2, sort_keys=True)
+            f.write("\n")
+
+    @classmethod
+    def _checkpoint_root(cls, model_path):
+        path = Path(model_path).resolve()
+        for candidate in (path, *path.parents):
+            if candidate.name == CHECKPOINTS_DIRNAME:
+                return candidate
+        return Path.cwd() / CHECKPOINTS_DIRNAME
+
+    @classmethod
+    def _checkpoint_layer_count(cls, weights_file):
+        state_dict = torch.load(weights_file, map_location="cpu")
+        layer_ids = {
+            int(key.split("encoder.layers.")[1].split(".")[0])
+            for key in state_dict
+            if "encoder.layers." in key
+        }
+        return len(layer_ids)
+
+    @classmethod
+    def _bootstrap_legacy_metadata(cls, checkpoints_root):
+        if not checkpoints_root.exists():
+            return
+        for config_file in checkpoints_root.rglob(CHECKPOINT_CONFIG_FILENAME):
+            checkpoint_dir = config_file.parent
+            metadata_file = checkpoint_dir / CHECKPOINT_METADATA_FILENAME
+            weights_file = checkpoint_dir / CHECKPOINT_MODEL_FILENAME
+            if metadata_file.exists() or not weights_file.exists():
+                continue
+
+            config = ViTIQAConfig.from_pretrained(str(checkpoint_dir))
+            try:
+                layer_count = cls._checkpoint_layer_count(weights_file)
+            except Exception as exc:
+                print(f"[ViTForIQA] Skipping legacy metadata for {checkpoint_dir}: {exc}")
+                continue
+
+            if layer_count != config.num_hidden_layers:
+                print(
+                    "[ViTForIQA] Skipping legacy metadata for "
+                    f"{checkpoint_dir}: checkpoint has {layer_count} layers, "
+                    f"config requests {config.num_hidden_layers}"
+                )
+                continue
+
+            cls._write_metadata(checkpoint_dir, config)
+            print(f"[ViTForIQA] Wrote legacy metadata to {metadata_file}")
+
+    @classmethod
+    def _find_checkpoint_for_config(cls, checkpoints_root, config_hash):
+        if not checkpoints_root.exists():
+            return None
+        for metadata_file in checkpoints_root.rglob(CHECKPOINT_METADATA_FILENAME):
+            try:
+                with metadata_file.open(encoding="utf-8") as f:
+                    metadata = json.load(f)
+            except Exception:
+                continue
+            if metadata.get("config_hash") == config_hash:
+                return metadata_file.parent
+        return None
+
+    @classmethod
+    def _new_checkpoint_dir(cls, checkpoints_root, config_hash):
+        hash_prefix = config_hash[:CHECKPOINT_HASH_PREFIX_LENGTH]
+        base = checkpoints_root / f"{CHECKPOINT_AUTO_DIR_PREFIX}-{hash_prefix}"
+        checkpoint_dir = base
+        suffix = 2
+        while checkpoint_dir.exists() and any(checkpoint_dir.iterdir()):
+            checkpoint_dir = checkpoints_root / f"{base.name}-{suffix}"
+            suffix += 1
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        return checkpoint_dir
+
+    @classmethod
     def from_pretrained(cls, model_path, torch_dtype=torch.float16, device_map=None, **kwargs):
-        config = ViTIQAConfig.from_pretrained(model_path)
+        config = ViTIQAConfig.from_pretrained(model_path, **kwargs)
+        checkpoints_root = cls._checkpoint_root(model_path)
+        cls._bootstrap_legacy_metadata(checkpoints_root)
+
+        config_hash = cls._config_hash(config)
+        resolved_path = cls._find_checkpoint_for_config(checkpoints_root, config_hash)
+        random_init = resolved_path is None
+
+        if random_init:
+            resolved_path = cls._new_checkpoint_dir(checkpoints_root, config_hash)
+            config.save_pretrained(str(resolved_path))
+            cls._write_metadata(resolved_path, config)
+            print(
+                "[ViTForIQA] No checkpoint metadata matched this config; "
+                f"created {resolved_path} with randomly initialized weights."
+            )
+        else:
+            resolved_path = Path(resolved_path)
+            if resolved_path.resolve() != Path(model_path).resolve():
+                print(f"[ViTForIQA] Using checkpoint metadata match at {resolved_path}")
+
         model = cls(config)
-        weights_file = os.path.join(model_path, "pytorch_model.bin")
-        if os.path.exists(weights_file):
+        model.resolved_checkpoint_path = str(resolved_path)
+
+        weights_file = resolved_path / CHECKPOINT_MODEL_FILENAME
+        if not random_init and weights_file.exists():
             state_dict = torch.load(weights_file, map_location="cpu")
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
-            head_keys = {"ln.weight", "ln.bias", "head.weight", "head.bias"}
-            still_missing = [k for k in missing if k in head_keys]
+            still_missing = [k for k in missing if k in IQA_HEAD_STATE_KEYS]
             if still_missing:
                 print(f"[ViTForIQA] Missing keys: {still_missing}")
             if unexpected:
                 print(f"[ViTForIQA] Unexpected keys: {unexpected}")
-        head_file = os.path.join(model_path, "head.bin")
-        if os.path.exists(head_file):
+        head_file = resolved_path / CHECKPOINT_HEAD_FILENAME
+        if not random_init and head_file.exists():
             head_sd = torch.load(head_file, map_location="cpu", weights_only=True)
             model.load_state_dict(head_sd, strict=False)
             print(f"[ViTForIQA] Head weights loaded from {head_file}")
@@ -185,4 +322,5 @@ class ViTForIQA(nn.Module):
     def save_pretrained(self, output_dir):
         os.makedirs(output_dir, exist_ok=True)
         self.config.save_pretrained(output_dir)
-        torch.save(self.state_dict(), os.path.join(output_dir, "pytorch_model.bin"))
+        self._write_metadata(output_dir, self.config)
+        torch.save(self.state_dict(), os.path.join(output_dir, CHECKPOINT_MODEL_FILENAME))

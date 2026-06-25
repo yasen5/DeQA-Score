@@ -1,5 +1,7 @@
 from transformers.configuration_utils import PretrainedConfig
 
+from src.constants import VISION_CONFIG_DEFAULTS
+
 
 class ViTIQAConfig(PretrainedConfig):
     r"""
@@ -10,14 +12,14 @@ class ViTIQAConfig(PretrainedConfig):
 
     def __init__(
         self,
-        hidden_size=1024,
-        intermediate_size=4096,
-        num_hidden_layers=24,
-        num_attention_heads=16,
-        image_size=448,
-        patch_size=14,
-        layer_norm_eps=1e-6,
-        attention_dropout=0.0,
+        hidden_size=None,
+        intermediate_size=None,
+        num_hidden_layers=None,
+        num_attention_heads=None,
+        image_size=None,
+        patch_size=None,
+        layer_norm_eps=None,
+        attention_dropout=None,
         num_quality_levels=5,
         softkl_loss=False,
         weight_rank=1.0,
@@ -28,6 +30,35 @@ class ViTIQAConfig(PretrainedConfig):
         detach_pred_std=False,
         **kwargs,
     ):
+        vision_config = kwargs.get("vision_config")
+        if not isinstance(vision_config, dict):
+            vision_config = {}
+
+        hidden_size = hidden_size if hidden_size is not None else vision_config.get(
+            "hidden_size", VISION_CONFIG_DEFAULTS["hidden_size"]
+        )
+        intermediate_size = intermediate_size if intermediate_size is not None else vision_config.get(
+            "intermediate_size", VISION_CONFIG_DEFAULTS["intermediate_size"]
+        )
+        num_hidden_layers = num_hidden_layers if num_hidden_layers is not None else vision_config.get(
+            "num_hidden_layers", VISION_CONFIG_DEFAULTS["num_hidden_layers"]
+        )
+        num_attention_heads = num_attention_heads if num_attention_heads is not None else vision_config.get(
+            "num_attention_heads", VISION_CONFIG_DEFAULTS["num_attention_heads"]
+        )
+        image_size = image_size if image_size is not None else vision_config.get(
+            "image_size", VISION_CONFIG_DEFAULTS["image_size"]
+        )
+        patch_size = patch_size if patch_size is not None else vision_config.get(
+            "patch_size", VISION_CONFIG_DEFAULTS["patch_size"]
+        )
+        layer_norm_eps = layer_norm_eps if layer_norm_eps is not None else vision_config.get(
+            "layer_norm_eps", VISION_CONFIG_DEFAULTS["layer_norm_eps"]
+        )
+        attention_dropout = attention_dropout if attention_dropout is not None else vision_config.get(
+            "attention_dropout", VISION_CONFIG_DEFAULTS["attention_dropout"]
+        )
+
         super().__init__(**kwargs)
 
         self.hidden_size = hidden_size
