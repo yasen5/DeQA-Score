@@ -50,6 +50,8 @@ CHECKPOINT_CONFIG_METADATA_FIELDS = (
 
 IQA_HEAD_STATE_KEYS = ("ln.weight", "ln.bias", "head.weight", "head.bias")
 
+TRAIN_LOCAL_FREEZE_BACKBONE_DEFAULT = True
+
 TRAIN_LOCAL_ARG_SPECS = (
     {
         "flags": ("--model-path",),
@@ -106,6 +108,23 @@ TRAIN_LOCAL_ARG_SPECS = (
         "kwargs": {
             "type": float,
             "default": 1e-3,
+        },
+    },
+    {
+        "flags": ("--freeze-backbone",),
+        "kwargs": {
+            "dest": "freeze_backbone",
+            "action": "store_true",
+            "default": TRAIN_LOCAL_FREEZE_BACKBONE_DEFAULT,
+            "help": "Freeze ViT backbone weights during local training.",
+        },
+    },
+    {
+        "flags": ("--train-backbone",),
+        "kwargs": {
+            "dest": "freeze_backbone",
+            "action": "store_false",
+            "help": "Train ViT backbone weights during local training.",
         },
     },
     {

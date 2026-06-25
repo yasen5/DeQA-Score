@@ -4,7 +4,7 @@ Minimal local training script — no deepspeed required.
 Trains the head on a fixed batch drawn from a soft-label JSON file produced by
 build_soft_labels/gen_soft_label.py, to confirm:
   - backbone weights load correctly
-  - ViT is frozen (only ln + head train)
+  - ViT can be frozen (only ln + head train)
   - loss decreases
 
 Usage:
@@ -81,11 +81,12 @@ def main(args):
     model = model.to(device=device, dtype=torch.float32)
     model.train()
 
-    # Freeze backbone — only train the head (ln + linear)
-    for p in model.vision_model.parameters():
-        p.requires_grad = False
-    # Disable gradient checkpointing on the frozen encoder to avoid spurious warnings
-    model.vision_model.encoder.gradient_checkpointing = False
+    if args.freeze_backbone:
+        # Freeze backbone — only train the head (ln + linear)
+        for p in model.vision_model.parameters():
+            p.requires_grad = False
+        # Disable gradient checkpointing on the frozen encoder to avoid spurious warnings
+        model.vision_model.encoder.gradient_checkpointing = False
 
     # Enable KL loss between predicted distribution and soft labels
     model.config.softkl_loss = True
