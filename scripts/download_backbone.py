@@ -9,6 +9,7 @@ and trained from scratch while the ViT backbone is frozen.
 """
 
 import argparse
+import logging
 import os
 import sys
 
@@ -23,9 +24,38 @@ from src.constants import (
     DEQA_SCORE_MIX3_VIT_SHARD_FILENAME,
     DOWNLOAD_BACKBONE_ARG_SPECS,
 )
+from src.model import ViTForIQA
+from src.model.configuration_mplug_owl2 import ViTIQAConfig
+
+logger = logging.getLogger(__name__)
+
+
+def resolve_output_dir(output_dir):
+    if output_dir is not None:
+        return output_dir
+
+    config = ViTIQAConfig(softkl_loss=True)
+    checkpoints_root = ViTForIQA._checkpoint_root()
+    ViTForIQA._bootstrap_legacy_metadata(checkpoints_root)
+    config_hash = ViTForIQA._config_hash(config)
+    checkpoint_dir = ViTForIQA._find_checkpoint_for_config(checkpoints_root, config_hash)
+
+    if checkpoint_dir is None:
+        checkpoint_dir = ViTForIQA._new_checkpoint_dir(checkpoints_root, config_hash)
+        config.save_pretrained(str(checkpoint_dir))
+        ViTForIQA._write_metadata(checkpoint_dir, config)
+        logger.warning(
+            "[download_backbone] No checkpoint metadata matched this config; "
+            f"created {checkpoint_dir} for new weights."
+        )
+    else:
+        print(f"[download_backbone] Using checkpoint metadata match at {checkpoint_dir}")
+
+    return str(checkpoint_dir)
 
 
 def main(output_dir):
+    output_dir = resolve_output_dir(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
     print("Downloading shard 4 (contains all ViT weights)...")

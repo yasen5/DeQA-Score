@@ -1,6 +1,7 @@
 import os
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -25,6 +26,8 @@ from src.constants import (
 )
 from .configuration_mplug_owl2 import ViTIQAConfig
 from .visual_encoder import MplugOwlVisionModel
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -203,7 +206,9 @@ class ViTForIQA(nn.Module):
             f.write("\n")
 
     @classmethod
-    def _checkpoint_root(cls, model_path):
+    def _checkpoint_root(cls, model_path=None):
+        if model_path is None:
+            return Path.cwd() / CHECKPOINTS_DIRNAME
         path = Path(model_path).resolve()
         for candidate in (path, *path.parents):
             if candidate.name == CHECKPOINTS_DIRNAME:
@@ -276,9 +281,17 @@ class ViTForIQA(nn.Module):
         return checkpoint_dir
 
     @classmethod
-    def from_pretrained(cls, model_path, torch_dtype=torch.float16, device_map=None, **kwargs):
-        config = ViTIQAConfig.from_pretrained(model_path, **kwargs)
-        checkpoints_root = cls._checkpoint_root(model_path)
+    def from_pretrained(cls, model_path=None, torch_dtype=torch.float16, device_map=None, **kwargs):
+        checkpoints_root = kwargs.pop("checkpoints_root", None)
+        if model_path is None:
+            config = ViTIQAConfig(**kwargs)
+        else:
+            config = ViTIQAConfig.from_pretrained(model_path, **kwargs)
+
+        if checkpoints_root is None:
+            checkpoints_root = cls._checkpoint_root(model_path)
+        else:
+            checkpoints_root = Path(checkpoints_root).resolve()
         cls._bootstrap_legacy_metadata(checkpoints_root)
 
         config_hash = cls._config_hash(config)
@@ -289,13 +302,13 @@ class ViTForIQA(nn.Module):
             resolved_path = cls._new_checkpoint_dir(checkpoints_root, config_hash)
             config.save_pretrained(str(resolved_path))
             cls._write_metadata(resolved_path, config)
-            print(
+            logger.warning(
                 "[ViTForIQA] No checkpoint metadata matched this config; "
                 f"created {resolved_path} with randomly initialized weights."
             )
         else:
             resolved_path = Path(resolved_path)
-            if resolved_path.resolve() != Path(model_path).resolve():
+            if model_path is None or resolved_path.resolve() != Path(model_path).resolve():
                 print(f"[ViTForIQA] Using checkpoint metadata match at {resolved_path}")
 
         model = cls(config)

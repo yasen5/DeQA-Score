@@ -69,10 +69,11 @@ def main(args):
     device = get_device()
     print(f"Device: {device}")
 
-    args.model_path = os.path.abspath(args.model_path)
+    if args.model_path is not None:
+        args.model_path = os.path.abspath(args.model_path)
 
     # from_pretrained already loads head.bin from model_path if it exists
-    model = ViTForIQA.from_pretrained(args.model_path, torch_dtype=None)
+    model = ViTForIQA.from_pretrained(args.model_path, torch_dtype=None, softkl_loss=True)
     args.model_path = getattr(model, "resolved_checkpoint_path", args.model_path)
     if args.save_head is None:
         args.save_head = os.path.join(args.model_path, CHECKPOINT_HEAD_FILENAME)

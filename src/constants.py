@@ -25,7 +25,6 @@ CHECKPOINT_METADATA_FILENAME = "metadata.json"
 CHECKPOINT_METADATA_VERSION = 1
 CHECKPOINT_AUTO_DIR_PREFIX = "vit-iqa"
 CHECKPOINT_HASH_PREFIX_LENGTH = 12
-DEQA_SCORE_MIX3_CHECKPOINT_PATH = "checkpoints/vit-iqa-5ca5f1ae52f1"
 DEQA_SCORE_MIX3_HF_REPO_ID = "zhiyuanyou/DeQA-Score-Mix3"
 DEQA_SCORE_MIX3_VIT_SHARD_FILENAME = "model-00004-of-00004.safetensors"
 
@@ -55,7 +54,8 @@ TRAIN_LOCAL_ARG_SPECS = (
     {
         "flags": ("--model-path",),
         "kwargs": {
-            "default": DEQA_SCORE_MIX3_CHECKPOINT_PATH,
+            "default": None,
+            "help": "Optional config/checkpoint path. If omitted, checkpoint metadata is matched from checkpoints/.",
         },
     },
     {
@@ -120,7 +120,7 @@ TRAIN_LOCAL_ARG_SPECS = (
         "kwargs": {
             "default": None,
             "metavar": "PATH",
-            "help": "Save trained head weights (default: <model-path>/head.bin)",
+            "help": "Save trained head weights (default: <resolved checkpoint>/head.bin)",
         },
     },
     {
@@ -144,8 +144,8 @@ DOWNLOAD_BACKBONE_ARG_SPECS = (
     {
         "flags": ("--output-dir",),
         "kwargs": {
-            "default": DEQA_SCORE_MIX3_CHECKPOINT_PATH,
-            "help": f"Directory to write {CHECKPOINT_MODEL_FILENAME} into",
+            "default": None,
+            "help": f"Directory to write {CHECKPOINT_MODEL_FILENAME} into. If omitted, checkpoint metadata is matched from checkpoints/.",
         },
     },
 )
@@ -160,7 +160,8 @@ DEMO_ARG_SPECS = (
     {
         "flags": ("--model-path",),
         "kwargs": {
-            "default": DEQA_SCORE_MIX3_CHECKPOINT_PATH,
+            "default": None,
+            "help": "Optional config/checkpoint path. If omitted, checkpoint metadata is matched from checkpoints/.",
         },
     },
     {
