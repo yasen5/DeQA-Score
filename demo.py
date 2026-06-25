@@ -112,7 +112,6 @@ def score_images(model, processor, pil_images, device):
 def make_plot(samples, pred_probs, pred_scores, out_path):
     n = len(samples)
     x = np.arange(len(LEVELS))
-    w = 0.38
 
     fig = plt.figure(figsize=(4.8 * n, 7.2))
     gs  = gridspec.GridSpec(2, n, height_ratios=[1, 1.5], hspace=0.38, wspace=0.38)
@@ -127,30 +126,40 @@ def make_plot(samples, pred_probs, pred_scores, out_path):
         ax_img.axis("off")
         ax_img.set_title(s["title"], fontsize=9, pad=4)
 
-        # ---- grouped bar chart ----
-        ax_bar = fig.add_subplot(gs[1, i])
-        bars_pred = ax_bar.bar(x - w / 2, pred_probs[i], w,
-                               color=PRED_COLOR, label=f"Pred ({pred_scores[i]:.2f})",
-                               edgecolor="white", linewidth=0.5)
-        bars_gt   = ax_bar.bar(x + w / 2, gt_probs, w,
-                               color=GT_COLOR,  label=f"GT ({gt_score:.2f})",
-                               edgecolor="white", linewidth=0.5, alpha=0.85)
+        # ---- overlapping distributions ----
+        ax_dist = fig.add_subplot(gs[1, i])
+        ax_dist.fill_between(x, pred_probs[i], color=PRED_COLOR, alpha=0.24)
+        ax_dist.plot(
+            x, pred_probs[i], color=PRED_COLOR, marker="o", linewidth=2.0,
+            label=f"Pred ({pred_scores[i]:.2f})",
+        )
+        ax_dist.fill_between(x, gt_probs, color=GT_COLOR, alpha=0.24)
+        ax_dist.plot(
+            x, gt_probs, color=GT_COLOR, marker="o", linewidth=2.0,
+            label=f"GT ({gt_score:.2f})",
+        )
 
-        ax_bar.set_xticks(x)
-        ax_bar.set_xticklabels(LEVELS, fontsize=8)
-        ax_bar.set_ylim(0, 1)
-        ax_bar.set_ylabel("Probability", fontsize=9)
-        ax_bar.tick_params(axis="y", labelsize=8)
-        ax_bar.legend(fontsize=7.5, loc="upper right")
-        ax_bar.set_title("Predicted vs. Ground Truth", fontsize=9, pad=4)
+        ax_dist.set_xticks(x)
+        ax_dist.set_xticklabels(LEVELS, fontsize=8)
+        ax_dist.set_xlim(x[0], x[-1])
+        ax_dist.set_ylim(0, 1)
+        ax_dist.set_ylabel("Probability", fontsize=9)
+        ax_dist.grid(axis="y", alpha=0.25, linewidth=0.8)
+        ax_dist.tick_params(axis="y", labelsize=8)
+        ax_dist.legend(fontsize=7.5, loc="upper right")
+        ax_dist.set_title("Overlapping Label Distributions", fontsize=9, pad=4)
 
-        for bar in (*bars_pred, *bars_gt):
-            h = bar.get_height()
-            if h > 0.05:
-                ax_bar.text(
-                    bar.get_x() + bar.get_width() / 2, h + 0.012,
-                    f"{h:.2f}", ha="center", va="bottom", fontsize=6.5,
-                )
+        for probs, color, y_offset in (
+            (pred_probs[i], PRED_COLOR, 0.018),
+            (gt_probs, GT_COLOR, -0.035),
+        ):
+            for xi, p in zip(x, probs):
+                if p > 0.05:
+                    ax_dist.text(
+                        xi, min(max(p + y_offset, 0.015), 0.985),
+                        f"{p:.2f}", ha="center", va="bottom",
+                        fontsize=6.5, color=color,
+                    )
 
     fig.suptitle("ViTForIQA — Predicted vs. Real Ground-Truth Label", fontsize=13, y=1.01)
     fig.savefig(out_path, bbox_inches="tight", dpi=150)
