@@ -48,8 +48,14 @@ class ViTForIQA(nn.Module):
         self.config = config
         self.vision_model = MplugOwlVisionModel(config)
         hidden = config.hidden_size
-        self.ln = nn.LayerNorm(hidden)
-        self.head = nn.Linear(hidden, config.num_quality_levels)
+        # Two-layer MLP head.  Input features are L2-normalised before being
+        # passed here (see _encode_one / score), so the head sees unit-norm
+        # vectors and can use a standard initialisation scale.
+        self.head = nn.Sequential(
+            nn.Linear(hidden, 256),
+            nn.GELU(),
+            nn.Linear(256, config.num_quality_levels),
+        )
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -105,10 +111,33 @@ class ViTForIQA(nn.Module):
             return (loss_1.sum() + loss_2.sum()) / pred_scores_A.shape[0]
         raise NotImplementedError(f"Unknown binary_rating_loss: {self.config.binary_rating_loss}")
 
+    def _cls_features(self, images):
+        """Mean of patch tokens from raw encoder output, bypassing post_layernorm.
+
+        Two design choices here:
+        - Patch mean rather than CLS token: the CLS token is trained for image
+          captioning and suppresses quality variation in favour of semantic
+          consistency.  Averaging the 1024 patch tokens (positions 1:) preserves
+          spatial quality signals (sharpness, noise, artefacts) distributed across
+          the image.
+        - Before post_layernorm: post_layernorm is a per-sample LayerNorm that
+          divides by within-sample std (~3035), collapsing cross-image variation
+          by ~3000×.  We bypass it and L2-normalise instead (see _encode_one).
+        """
+        vit = self.vision_model
+        hidden = vit.embeddings(images)
+        enc_out = vit.encoder(inputs_embeds=hidden, return_dict=True)
+        # Mean-pool patch tokens only; skip position 0 (CLS).
+        return enc_out.last_hidden_state[:, 1:, :].mean(dim=1)  # (B, hidden)
+
     def _encode_one(self, images, level_probs=None):
         """Run the ViT on one batch and return (logits, probs, scores, stds, kl_loss)."""
-        cls = self.vision_model(images).pooler_output  # (B, hidden)
-        logits = self.head(self.ln(cls))               # (B, 5)
+        feat = self._cls_features(images)             # (B, hidden)
+        # L2-norm maps each feature to the unit sphere.  This removes the
+        # within-sample magnitude (~3000) that would otherwise swamp cross-image
+        # quality differences, and works with any batch size (unlike BatchNorm).
+        feat = F.normalize(feat, dim=-1)
+        logits = self.head(feat)                      # (B, num_quality_levels)
         probs, scores, stds = self._probs_scores_stds(logits)
         kl_loss = None
         if level_probs is not None and self.config.softkl_loss:
@@ -165,8 +194,8 @@ class ViTForIQA(nn.Module):
     def score(self, images):
         """Return quality scores in [1, 5] for a batch of preprocessed images."""
         with torch.inference_mode():
-            cls = self.vision_model(images).pooler_output
-            logits = self.head(self.ln(cls))
+            cls = self._cls_features(images)
+            logits = self.head(F.normalize(cls, dim=-1))
             _, scores, _ = self._probs_scores_stds(logits)
             return scores
 
@@ -314,12 +343,16 @@ class ViTForIQA(nn.Module):
         weights_file = resolved_path / CHECKPOINT_MODEL_FILENAME
         if not random_init and weights_file.exists():
             state_dict = torch.load(weights_file, map_location="cpu")
+            # Drop head and any legacy normalisation keys (ln.*, head.*) that may
+            # be stale in pytorch_model.bin from a prior architecture.
+            # head.bin is loaded separately and is authoritative for the head.
+            state_dict = {
+                k: v for k, v in state_dict.items()
+                if not k.startswith("head.") and not k.startswith("ln.")
+            }
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
-            still_missing = [k for k in missing if k in IQA_HEAD_STATE_KEYS]
-            if still_missing:
-                print(f"[ViTForIQA] Missing keys: {still_missing}")
             if unexpected:
-                print(f"[ViTForIQA] Unexpected keys: {unexpected}")
+                print(f"[ViTForIQA] Unexpected backbone keys: {unexpected}")
             print(f"[ViTForIQA] Backbone weights loaded from {weights_file}")
         elif not random_init:
             print(f"[ViTForIQA] WARNING: checkpoint dir exists but {CHECKPOINT_MODEL_FILENAME} not found — backbone is randomly initialized")

@@ -48,7 +48,10 @@ CHECKPOINT_CONFIG_METADATA_FIELDS = (
     "detach_pred_std",
 )
 
-IQA_HEAD_STATE_KEYS = ("ln.weight", "ln.bias", "head.weight", "head.bias")
+IQA_HEAD_STATE_KEYS = (
+    "head.0.weight", "head.0.bias",   # Linear(hidden, 256)
+    "head.2.weight", "head.2.bias",   # Linear(256, num_quality_levels)
+)
 
 TRAIN_LOCAL_FREEZE_BACKBONE_DEFAULT = False
 
@@ -85,7 +88,7 @@ TRAIN_LOCAL_ARG_SPECS = (
         "flags": ("--steps",),
         "kwargs": {
             "type": int,
-            "default": 50,
+            "default": 500,
         },
     },
     {
@@ -108,6 +111,14 @@ TRAIN_LOCAL_ARG_SPECS = (
         "kwargs": {
             "type": float,
             "default": 1e-3,
+        },
+    },
+    {
+        "flags": ("--grad-accum",),
+        "kwargs": {
+            "type": int,
+            "default": 32,
+            "help": "Gradient accumulation steps; effective batch = batch-size × grad-accum (default: 32)",
         },
     },
     {

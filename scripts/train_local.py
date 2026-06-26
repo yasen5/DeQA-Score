@@ -1,17 +1,25 @@
 """
 Minimal local training script — no deepspeed required.
 
-Trains the head on randomly sampled batches drawn from a soft-label JSON file produced by
-src/datasets/build_soft_labels/gen_soft_label.py, to confirm:
-  - backbone weights load correctly
-  - ViT can be frozen (only ln + head train)
-  - loss decreases
+Trains ViTForIQA on soft-label quality supervision using end-to-end backbone
+fine-tuning with gradient accumulation.
 
-Usage:
+Training design
+---------------
+- Gradient accumulation (--grad-accum, default 32): each logged "step" averages
+  gradients over grad-accum forward passes, giving an effective batch size of
+  batch-size × grad-accum (default 4 × 32 = 128).  This stabilises training
+  without requiring more GPU memory.
+- L2-normalised patch-mean pooling (in the model): removes the ~3000× magnitude
+  gap between within-sample and cross-image variation that previously caused the
+  head to see identical inputs for all images.
+
+Usage
+-----
     python3 scripts/train_local.py \\
-        --data-path ../../Data-DeQA-Score/KONIQ/metas/train_koniq_7k_new.json \\
-        --image-folder ../../Data-DeQA-Score \\
-        [--steps 50] [--batch-size 4] [--lr 1e-3]
+        --data-path data/Data-DeQA-Score/KADID10K/metas/train_kadid_8k.json \\
+        --image-folder data/Data-DeQA-Score \\
+        [--steps 500] [--batch-size 4] [--grad-accum 32] [--lr 1e-3]
 """
 
 import argparse
@@ -23,6 +31,7 @@ import sys
 import types
 
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from transformers import AutoImageProcessor
 
@@ -41,7 +50,6 @@ def get_device():
 
 
 def prepare_dataset(data_path, preprocessor_path, batch_size):
-    """Load dataset and processor once before training. Returns (samples, processor, bg_color)."""
     with open(data_path) as f:
         samples = json.load(f)
     samples = [s for s in samples if "level_probs" in s]
@@ -56,7 +64,6 @@ def prepare_dataset(data_path, preprocessor_path, batch_size):
 
 
 def sample_batch(samples, processor, bg_color, image_folder, batch_size, device, dtype):
-    """Randomly sample a batch from the pre-loaded dataset."""
     chosen = random.sample(samples, batch_size)
     images, level_probs = [], []
     for s in chosen:
@@ -78,7 +85,6 @@ def main(args):
     if args.model_path is not None:
         args.model_path = os.path.abspath(args.model_path)
 
-    # from_pretrained already loads head.bin from model_path if it exists
     model = ViTForIQA.from_pretrained(args.model_path, torch_dtype=None, softkl_loss=True)
     args.model_path = getattr(model, "resolved_checkpoint_path", args.model_path)
     if args.save_head is None:
@@ -88,22 +94,27 @@ def main(args):
     model.train()
 
     if args.freeze_backbone:
-        # Freeze backbone — only train the head (ln + linear)
         for p in model.vision_model.parameters():
             p.requires_grad = False
-        # Disable gradient checkpointing on the frozen encoder to avoid spurious warnings
         model.vision_model.encoder.gradient_checkpointing = False
+        print("Backbone frozen — training head only")
+    else:
+        print("Backbone unfrozen — fine-tuning end-to-end")
 
-    # Enable KL loss between predicted distribution and soft labels
     model.config.softkl_loss = True
-    trainable = [p for p in model.parameters() if p.requires_grad]
+
+    optimizer = torch.optim.Adam(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=args.lr,
+    )
+
     trainable_names = [n for n, p in model.named_parameters() if p.requires_grad]
-    print(f"Trainable params: {trainable_names}")
-    print(f"Total trainable: {sum(p.numel() for p in trainable):,}")
+    total_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable params ({len(trainable_names)} tensors, {total_trainable:,} values)")
+    print(f"  LR: {args.lr:.1e}")
+    print(f"  Batch size: {args.batch_size}  Grad accum: {args.grad_accum}"
+          f"  → effective batch: {args.batch_size * args.grad_accum}")
 
-    optimizer = torch.optim.Adam(trainable, lr=args.lr)
-
-    # Linear warmup: scale LR from 0 → 1 over warmup_steps, then hold at 1
     def lr_lambda(step):
         if args.warmup_steps <= 0:
             return 1.0
@@ -112,16 +123,15 @@ def main(args):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     def save_weights():
-        head_sd = {
-            k: v.cpu()
-            for k, v in model.state_dict().items()
-            if k in IQA_HEAD_STATE_KEYS
-        }
+        if any(p.isnan().any().item() for p in model.parameters()):
+            print("WARNING: NaN detected in model weights — skipping save to avoid corrupting checkpoint")
+            return
+        head_sd = {k: v.cpu() for k, v in model.state_dict().items() if k in IQA_HEAD_STATE_KEYS}
         torch.save(head_sd, args.save_head)
-        print(f"Head weights saved to {args.save_head}")
+        print(f"Head saved to {args.save_head}")
         if not args.freeze_backbone:
             model.save_pretrained(args.model_path)
-            print(f"Backbone weights saved to {args.model_path}")
+            print(f"Backbone saved to {args.model_path}")
 
     def _sigint_handler(sig, frame):
         print("\nInterrupted — saving weights before exit...")
@@ -133,31 +143,44 @@ def main(args):
     samples, processor, bg_color = prepare_dataset(
         args.data_path, args.preprocessor_path, args.batch_size
     )
-    print(f"Dataset: {len(samples)} samples loaded from {args.data_path}")
-
+    print(f"\nDataset: {len(samples)} samples from {args.data_path}")
     print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
-    print("-" * 30)
+    print("-" * 32)
+
+    accum = args.grad_accum
+    optimizer.zero_grad()
+    running_loss = 0.0
+
     for step in range(1, args.steps + 1):
-        images, level_probs = sample_batch(
-            samples, processor, bg_color,
-            args.image_folder, args.batch_size, device, torch.float32,
-        )
-        optimizer.zero_grad()
-        output = model(images=images, level_probs=level_probs)
-        loss = output.loss
-        loss.backward()
+        # Each logged step accumulates `accum` mini-batches before an update.
+        step_loss = 0.0
+        for _ in range(accum):
+            images, level_probs = sample_batch(
+                samples, processor, bg_color,
+                args.image_folder, args.batch_size, device, torch.float32,
+            )
+            output = model(images=images, level_probs=level_probs)
+            # Divide by accum so the accumulated gradient equals the mean loss.
+            loss = output.loss / accum
+            loss.backward()
+            step_loss += loss.item()
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        optimizer.zero_grad()
         scheduler.step()
+
+        running_loss = 0.9 * running_loss + 0.1 * step_loss if step > 1 else step_loss
         if step % args.log_every == 0 or step == 1:
             current_lr = scheduler.get_last_lr()[0]
-            print(f"{step:>5}  {loss.item():>10.6f}  {current_lr:>10.2e}")
+            print(f"{step:>5}  {step_loss:>10.6f}  {current_lr:>10.2e}  "
+                  f"(ema {running_loss:.4f})")
 
     print("\nDone.")
     save_weights()
 
     if args.run_demo:
         import demo as demo_mod
-
         demo_args = types.SimpleNamespace(
             model_path=args.model_path,
             head_path=args.save_head,
@@ -173,7 +196,10 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     for arg_spec in TRAIN_LOCAL_ARG_SPECS:
         parser.add_argument(*arg_spec["flags"], **arg_spec["kwargs"])
     args = parser.parse_args()
