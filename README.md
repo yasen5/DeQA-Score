@@ -242,7 +242,7 @@ sh scripts/train.sh $GPU_IDs
 - Run the following scripts to construct the distribution-based soft labels.
 
 ```shell
-cd build_soft_labels
+cd src/datasets/build_soft_labels
 python gen_soft_label.py
 ```
 

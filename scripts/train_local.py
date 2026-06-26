@@ -2,7 +2,7 @@
 Minimal local training script — no deepspeed required.
 
 Trains the head on a fixed batch drawn from a soft-label JSON file produced by
-build_soft_labels/gen_soft_label.py, to confirm:
+src/datasets/build_soft_labels/gen_soft_label.py, to confirm:
   - backbone weights load correctly
   - ViT can be frozen (only ln + head train)
   - loss decreases
@@ -17,6 +17,7 @@ Usage:
 import argparse
 import json
 import os
+import random
 import signal
 import sys
 import types
@@ -27,6 +28,7 @@ from transformers import AutoImageProcessor
 
 sys.path.insert(0, ".")
 from src.constants import CHECKPOINT_HEAD_FILENAME, IQA_HEAD_STATE_KEYS, TRAIN_LOCAL_ARG_SPECS
+from src.mm_utils import expand2square
 from src.model import ViTForIQA
 
 
@@ -43,19 +45,22 @@ def load_real_batch(data_path, image_folder, preprocessor_path, batch_size, devi
     with open(data_path) as f:
         samples = json.load(f)
 
-    samples = [s for s in samples if "level_probs" in s][:batch_size]
+    samples = [s for s in samples if "level_probs" in s]
     if len(samples) < batch_size:
         raise ValueError(
             f"Not enough samples with level_probs in {data_path}: "
             f"found {len(samples)}, need {batch_size}"
         )
+    samples = random.sample(samples, batch_size)
 
     processor = AutoImageProcessor.from_pretrained(preprocessor_path)
+    bg_color = tuple(int(x * 255) for x in processor.image_mean)
 
     images, level_probs = [], []
     for s in samples:
         img_path = os.path.join(image_folder, s["image"])
         img = Image.open(img_path).convert("RGB")
+        img = expand2square(img, bg_color)
         pixel_values = processor(img, return_tensors="pt")["pixel_values"][0]
         images.append(pixel_values)
         level_probs.append(s["level_probs"])
@@ -105,11 +110,6 @@ def main(args):
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    images, level_probs = load_real_batch(
-        args.data_path, args.image_folder, args.preprocessor_path,
-        args.batch_size, device, torch.float32,
-    )
-
     def save_weights():
         head_sd = {
             k: v.cpu()
@@ -132,6 +132,10 @@ def main(args):
     print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
     print("-" * 30)
     for step in range(1, args.steps + 1):
+        images, level_probs = load_real_batch(
+            args.data_path, args.image_folder, args.preprocessor_path,
+            args.batch_size, device, torch.float32,
+        )
         optimizer.zero_grad()
         output = model(images=images, level_probs=level_probs)
         loss = output.loss
