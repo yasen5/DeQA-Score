@@ -17,8 +17,8 @@ Usage:
 import argparse
 import json
 import os
+import signal
 import sys
-import tempfile
 import types
 
 import torch
@@ -110,6 +110,25 @@ def main(args):
         args.batch_size, device, torch.float32,
     )
 
+    def save_weights():
+        head_sd = {
+            k: v.cpu()
+            for k, v in model.state_dict().items()
+            if k in IQA_HEAD_STATE_KEYS
+        }
+        torch.save(head_sd, args.save_head)
+        print(f"Head weights saved to {args.save_head}")
+        if not args.freeze_backbone:
+            model.save_pretrained(args.model_path)
+            print(f"Backbone weights saved to {args.model_path}")
+
+    def _sigint_handler(sig, frame):
+        print("\nInterrupted — saving weights before exit...")
+        save_weights()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _sigint_handler)
+
     print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
     print("-" * 30)
     for step in range(1, args.steps + 1):
@@ -124,43 +143,19 @@ def main(args):
             print(f"{step:>5}  {loss.item():>10.6f}  {current_lr:>10.2e}")
 
     print("\nDone.")
-
-    head_sd = {
-        k: v.cpu()
-        for k, v in model.state_dict().items()
-        if k in IQA_HEAD_STATE_KEYS
-    }
-
-    torch.save(head_sd, args.save_head)
-    print(f"Head weights saved to {args.save_head}")
-
-    if not args.freeze_backbone:
-        model.save_pretrained(args.model_path)
-        print(f"Backbone weights saved to {args.model_path}")
+    save_weights()
 
     if args.run_demo:
         import demo as demo_mod
 
-        _tmp_head = None
-        head_path = args.save_head
-        if head_path is None:
-            _tmp = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
-            _tmp.close()
-            head_path = _tmp.name
-            _tmp_head = head_path
-            torch.save(head_sd, head_path)
-
         demo_args = types.SimpleNamespace(
             model_path=args.model_path,
-            head_path=head_path,
+            head_path=args.save_head,
             preprocessor_path=args.preprocessor_path,
             out=args.demo_out,
         )
         print(f"\nRunning demo → {args.demo_out}")
         demo_mod.main(demo_args)
-
-        if _tmp_head:
-            os.unlink(_tmp_head)
 
 
 if __name__ == "__main__":
