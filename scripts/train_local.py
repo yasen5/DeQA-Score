@@ -30,6 +30,7 @@ import signal
 import sys
 import types
 
+import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -147,6 +148,28 @@ def main(args):
     print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
     print("-" * 32)
 
+    plt.ion()
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Loss")
+    ax.set_title("Training Loss")
+    (line_step,) = ax.plot([], [], alpha=0.4, color="steelblue", label="step loss")
+    (line_ema,) = ax.plot([], [], color="steelblue", linewidth=2, label="EMA loss")
+    ax.legend()
+    plot_steps, plot_losses, plot_ema = [], [], []
+
+    loss_plot_path = os.path.join(args.model_path, "loss_curve.png")
+
+    def update_plot():
+        line_step.set_data(plot_steps, plot_losses)
+        line_ema.set_data(plot_steps, plot_ema)
+        ax.relim()
+        ax.autoscale_view()
+        fig.tight_layout()
+        fig.canvas.draw()
+        plt.pause(0.001)
+        fig.savefig(loss_plot_path, dpi=100)
+
     accum = args.grad_accum
     optimizer.zero_grad()
     running_loss = 0.0
@@ -175,9 +198,17 @@ def main(args):
             current_lr = scheduler.get_last_lr()[0]
             print(f"{step:>5}  {step_loss:>10.6f}  {current_lr:>10.2e}  "
                   f"(ema {running_loss:.4f})")
+            plot_steps.append(step)
+            plot_losses.append(step_loss)
+            plot_ema.append(running_loss)
+            update_plot()
 
     print("\nDone.")
     save_weights()
+    update_plot()
+    print(f"Loss curve saved to {loss_plot_path}")
+    plt.ioff()
+    plt.show()
 
     if args.run_demo:
         import demo as demo_mod
