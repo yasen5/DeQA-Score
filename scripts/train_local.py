@@ -23,7 +23,6 @@ Usage
 """
 
 import argparse
-import json
 import os
 import random
 import signal
@@ -33,12 +32,11 @@ import types
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-from PIL import Image
 from transformers import AutoImageProcessor
 
 sys.path.insert(0, ".")
 from src.constants import CHECKPOINT_HEAD_FILENAME, IQA_HEAD_STATE_KEYS, TRAIN_LOCAL_ARG_SPECS
-from src.mm_utils import expand2square
+from src.datasets.single_dataset import DataCollatorForSupervisedDataset, SingleDataset
 from src.model import ViTForIQA
 
 
@@ -48,35 +46,6 @@ def get_device():
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
-
-
-def prepare_dataset(data_path, preprocessor_path, batch_size):
-    with open(data_path) as f:
-        samples = json.load(f)
-    samples = [s for s in samples if "level_probs" in s]
-    if len(samples) < batch_size:
-        raise ValueError(
-            f"Not enough samples with level_probs in {data_path}: "
-            f"found {len(samples)}, need {batch_size}"
-        )
-    processor = AutoImageProcessor.from_pretrained(preprocessor_path)
-    bg_color = tuple(int(x * 255) for x in processor.image_mean)
-    return samples, processor, bg_color
-
-
-def sample_batch(samples, processor, bg_color, image_folder, batch_size, device, dtype):
-    chosen = random.sample(samples, batch_size)
-    images, level_probs = [], []
-    for s in chosen:
-        img_path = os.path.join(image_folder, s["image"])
-        img = Image.open(img_path).convert("RGB")
-        img = expand2square(img, bg_color)
-        pixel_values = processor(img, return_tensors="pt")["pixel_values"][0]
-        images.append(pixel_values)
-        level_probs.append(s["level_probs"])
-    images = torch.stack(images).to(device=device, dtype=dtype)
-    level_probs = torch.tensor(level_probs, dtype=dtype, device=device)
-    return images, level_probs
 
 
 def main(args):
@@ -141,10 +110,26 @@ def main(args):
 
     signal.signal(signal.SIGINT, _sigint_handler)
 
-    samples, processor, bg_color = prepare_dataset(
-        args.data_path, args.preprocessor_path, args.batch_size
+    processor = AutoImageProcessor.from_pretrained(args.preprocessor_path)
+    data_args_ns = types.SimpleNamespace(
+        data_paths=[args.data_path],
+        data_weights=[1],
+        image_folder=args.image_folder,
+        image_processor=processor,
+        image_aspect_ratio="pad",
     )
-    print(f"\nDataset: {len(samples)} samples from {args.data_path}")
+    dataset = SingleDataset(
+        data_paths=data_args_ns.data_paths,
+        data_weights=data_args_ns.data_weights,
+        data_args=data_args_ns,
+    )
+    collator = DataCollatorForSupervisedDataset()
+    if len(dataset) < args.batch_size:
+        raise ValueError(
+            f"Not enough samples with level_probs in {args.data_path}: "
+            f"found {len(dataset)}, need {args.batch_size}"
+        )
+    print(f"\nDataset: {len(dataset)} samples from {args.data_path}")
     print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
     print("-" * 32)
 
@@ -178,10 +163,10 @@ def main(args):
         # Each logged step accumulates `accum` mini-batches before an update.
         step_loss = 0.0
         for _ in range(accum):
-            images, level_probs = sample_batch(
-                samples, processor, bg_color,
-                args.image_folder, args.batch_size, device, torch.float32,
-            )
+            indices = random.sample(range(len(dataset)), args.batch_size)
+            batch = collator([dataset[i] for i in indices])
+            images = batch["images"].to(device=device, dtype=torch.float32)
+            level_probs = batch["level_probs"].to(device=device, dtype=torch.float32)
             output = model(images=images, level_probs=level_probs)
             # Divide by accum so the accumulated gradient equals the mean loss.
             loss = output.loss / accum
