@@ -1,7 +1,7 @@
 """
 Minimal local training script — no deepspeed required.
 
-Trains the head on a fixed batch drawn from a soft-label JSON file produced by
+Trains the head on randomly sampled batches drawn from a soft-label JSON file produced by
 src/datasets/build_soft_labels/gen_soft_label.py, to confirm:
   - backbone weights load correctly
   - ViT can be frozen (only ln + head train)
@@ -40,31 +40,32 @@ def get_device():
     return torch.device("cpu")
 
 
-def load_real_batch(data_path, image_folder, preprocessor_path, batch_size, device, dtype):
-    """Load a fixed batch from a soft-label JSON file (gen_soft_label.py output)."""
+def prepare_dataset(data_path, preprocessor_path, batch_size):
+    """Load dataset and processor once before training. Returns (samples, processor, bg_color)."""
     with open(data_path) as f:
         samples = json.load(f)
-
     samples = [s for s in samples if "level_probs" in s]
     if len(samples) < batch_size:
         raise ValueError(
             f"Not enough samples with level_probs in {data_path}: "
             f"found {len(samples)}, need {batch_size}"
         )
-    samples = random.sample(samples, batch_size)
-
     processor = AutoImageProcessor.from_pretrained(preprocessor_path)
     bg_color = tuple(int(x * 255) for x in processor.image_mean)
+    return samples, processor, bg_color
 
+
+def sample_batch(samples, processor, bg_color, image_folder, batch_size, device, dtype):
+    """Randomly sample a batch from the pre-loaded dataset."""
+    chosen = random.sample(samples, batch_size)
     images, level_probs = [], []
-    for s in samples:
+    for s in chosen:
         img_path = os.path.join(image_folder, s["image"])
         img = Image.open(img_path).convert("RGB")
         img = expand2square(img, bg_color)
         pixel_values = processor(img, return_tensors="pt")["pixel_values"][0]
         images.append(pixel_values)
         level_probs.append(s["level_probs"])
-
     images = torch.stack(images).to(device=device, dtype=dtype)
     level_probs = torch.tensor(level_probs, dtype=dtype, device=device)
     return images, level_probs
@@ -129,12 +130,17 @@ def main(args):
 
     signal.signal(signal.SIGINT, _sigint_handler)
 
+    samples, processor, bg_color = prepare_dataset(
+        args.data_path, args.preprocessor_path, args.batch_size
+    )
+    print(f"Dataset: {len(samples)} samples loaded from {args.data_path}")
+
     print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
     print("-" * 30)
     for step in range(1, args.steps + 1):
-        images, level_probs = load_real_batch(
-            args.data_path, args.image_folder, args.preprocessor_path,
-            args.batch_size, device, torch.float32,
+        images, level_probs = sample_batch(
+            samples, processor, bg_color,
+            args.image_folder, args.batch_size, device, torch.float32,
         )
         optimizer.zero_grad()
         output = model(images=images, level_probs=level_probs)
@@ -156,6 +162,10 @@ def main(args):
             model_path=args.model_path,
             head_path=args.save_head,
             preprocessor_path=args.preprocessor_path,
+            dataset_json=args.data_path,
+            data_root=args.image_folder,
+            num_samples=4,
+            seed=0,
             out=args.demo_out,
         )
         print(f"\nRunning demo → {args.demo_out}")

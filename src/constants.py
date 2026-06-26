@@ -169,8 +169,8 @@ DOWNLOAD_BACKBONE_ARG_SPECS = (
     },
 )
 
-DEMO_DEFAULT_DATASET_JSON = "../data/Data-DeQA-Score/KADID10K/metas/train_kadid_8k_new.json"
-DEMO_DEFAULT_DATA_ROOT = "../data/Data-DeQA-Score"
+DEMO_DEFAULT_DATASET_JSON = "data/Data-DeQA-Score/KADID10K/metas/train_kadid_8k.json"
+DEMO_DEFAULT_DATA_ROOT = "data/Data-DeQA-Score"
 DEMO_LEVELS = ("excellent", "good", "fair", "poor", "bad")
 DEMO_PRED_COLOR = "#3498db"
 DEMO_GT_COLOR = "#e67e22"

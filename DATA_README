@@ -1,0 +1,77 @@
+---
+license: apache-2.0
+task_categories:
+- image-to-text
+language:
+- en
+tags:
+- multi-modal image quality assessment
+pretty_name: Data-DeQA-Score
+size_categories:
+- 10K<n<100K
+---
+
+# Data-DeQA-Score
+
+Datasets of the DeQA-Score paper 
+(
+[project page](https://depictqa.github.io/deqa-score/) / 
+[codes](https://github.com/zhiyuanyou/DeQA-Score) / 
+[paper](https://arxiv.org/abs/2501.11561) 
+) 
+in our [DepictQA project](https://depictqa.github.io/).
+
+## Dataset Construction
+
+- Download our meta files in this repo. 
+
+- Download source images from [KonIQ](https://database.mmsp-kn.de/koniq-10k-database.html), 
+[SPAQ](https://github.com/h4nwei/SPAQ), 
+[KADID](https://database.mmsp-kn.de/kadid-10k-database.html), 
+[PIPAL](https://github.com/HaomingCai/PIPAL-dataset), 
+[LIVE-Wild](https://live.ece.utexas.edu/research/ChallengeDB/index.html), 
+[AGIQA](https://github.com/lcysyzxdxc/AGIQA-3k-Database), 
+[TID2013](https://www.ponomarenko.info/tid2013.htm), 
+and [CSIQ](https://s2.smu.edu/~eclarson/csiq.html).
+
+- Arrange the folders as follows:
+
+```
+|-- Data-DeQA-Score
+  |-- KONIQ
+    |-- images/*.jpg
+    |-- metas
+  |-- SPAQ
+    |-- images/*.jpg
+    |-- metas
+  |-- KADID10K
+    |-- images/*.png
+    |-- metas
+  |-- PIPAL
+    |-- images/Distortion_*/*.bmp
+    |-- metas
+  |-- LIVE-WILD
+    |-- images/*.bmp
+    |-- metas
+  |-- AGIQA3K
+    |-- images/*.jpg
+    |-- metas
+  |-- TID2013
+    |-- images/distorted_images/*.bmp
+    |-- metas
+  |-- CSIQ
+    |-- images/dst_imgs/*/*.png
+    |-- metas
+```
+
+If you find our work useful for your research and applications, please cite using the BibTeX:
+
+```bibtex
+@inproceedings{deqa_score,
+  title={Teaching Large Language Models to Regress Accurate Image Quality Scores using Score Distribution},
+  author={You, Zhiyuan and Cai, Xin and Gu, Jinjin and Xue, Tianfan and Dong, Chao},
+  booktitle={IEEE Conference on Computer Vision and Pattern Recognition},
+  year={2025},
+}
+```
+
