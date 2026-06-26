@@ -1,7 +1,6 @@
 import os
 import hashlib
 import json
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -26,8 +25,6 @@ from src.constants import (
 )
 from .configuration_mplug_owl2 import ViTIQAConfig
 from .visual_encoder import MplugOwlVisionModel
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -302,9 +299,9 @@ class ViTForIQA(nn.Module):
             resolved_path = cls._new_checkpoint_dir(checkpoints_root, config_hash)
             config.save_pretrained(str(resolved_path))
             cls._write_metadata(resolved_path, config)
-            logger.warning(
-                "[ViTForIQA] No checkpoint metadata matched this config; "
-                f"created {resolved_path} with randomly initialized weights."
+            print(
+                f"[ViTForIQA] No checkpoint found for this config; "
+                f"starting from randomly initialized weights at {resolved_path}"
             )
         else:
             resolved_path = Path(resolved_path)
@@ -323,6 +320,9 @@ class ViTForIQA(nn.Module):
                 print(f"[ViTForIQA] Missing keys: {still_missing}")
             if unexpected:
                 print(f"[ViTForIQA] Unexpected keys: {unexpected}")
+            print(f"[ViTForIQA] Backbone weights loaded from {weights_file}")
+        elif not random_init:
+            print(f"[ViTForIQA] WARNING: checkpoint dir exists but {CHECKPOINT_MODEL_FILENAME} not found — backbone is randomly initialized")
         head_file = resolved_path / CHECKPOINT_HEAD_FILENAME
         if not random_init and head_file.exists():
             head_sd = torch.load(head_file, map_location="cpu", weights_only=True)

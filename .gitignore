@@ -24,3 +24,4 @@ res_*
 checkpoints/
 commands_i_ran.md
 *.png
+data/

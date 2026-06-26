@@ -134,6 +134,10 @@ def main(args):
     torch.save(head_sd, args.save_head)
     print(f"Head weights saved to {args.save_head}")
 
+    if not args.freeze_backbone:
+        model.save_pretrained(args.model_path)
+        print(f"Backbone weights saved to {args.model_path}")
+
     if args.run_demo:
         import demo as demo_mod
 
