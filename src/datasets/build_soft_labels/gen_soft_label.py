@@ -44,6 +44,26 @@ def load_soft_label_samples(path: str) -> List[SoftLabelSample]:
         return [SoftLabelSample.from_json_dict(sample) for sample in json.load(fr)]
 
 
+@dataclass
+class DatasetSplit:
+    train: List[str]
+    test: List[str]
+
+    @classmethod
+    def from_json_dict(cls, data: Dict[str, Any]) -> "DatasetSplit":
+        return cls(train=data["train"], test=data["test"])
+
+
+@dataclass
+class MOSSample:
+    mos: float
+    std: float
+
+    @classmethod
+    def from_json_dict(cls, data: Dict[str, Any]) -> "MOSSample":
+        return cls(mos=float(data["mos"]), std=float(data["std"]))
+
+
 def adjust_gaussian_bar(probs, score):
     """
     alpha * (a + b + c + d + e) + 5 * beta = 1
@@ -80,17 +100,20 @@ def main(cfg):
     thre_std = cfg["thre_std"]
     thre_diff = cfg["thre_diff"]
     with open(cfg["split_json"]) as fr:
-        split = json.load(fr)
+        split = DatasetSplit.from_json_dict(json.load(fr))
     with open(cfg["mos_json"]) as fr:
-        mos_dict = json.load(fr)
+        mos_dict = {
+            image: MOSSample.from_json_dict(sample)
+            for image, sample in json.load(fr).items()
+        }
     save_train = cfg["save_train"]
     save_test = cfg["save_test"]
     img_dir = cfg["img_dir"]
 
     moses, stds, imgs = [], [], []
-    for img in mos_dict:
-        moses.append(mos_dict[img]["mos"])
-        stds.append(mos_dict[img]["std"])
+    for img, sample in mos_dict.items():
+        moses.append(sample.mos)
+        stds.append(sample.std)
         imgs.append(img)
     max_mos = max([float(_) for _ in moses])
     min_mos = min([float(_) for _ in moses])
@@ -100,9 +123,9 @@ def main(cfg):
     train_metas, test_metas = [], []
     for img, mos_str, std_str in zip(imgs, moses, stds):
         mos, std = float(mos_str), float(std_str)
-        if os.path.basename(img) in split["train"]:
+        if os.path.basename(img) in split.train:
             training = True
-        elif os.path.basename(img) in split["test"]:
+        elif os.path.basename(img) in split.test:
             training = False
         else:
             idx += 1

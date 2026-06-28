@@ -16,10 +16,10 @@ Usage:
 """
 
 import argparse
-import json
 import os
 import random
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -38,6 +38,7 @@ from src.constants import (
     DEMO_LEVELS,
     DEMO_PRED_COLOR,
 )
+from src.datasets.build_soft_labels.gen_soft_label import load_soft_label_samples
 from src.utils import expand2square
 from src.model import ViTForIQA
 
@@ -46,15 +47,21 @@ PRED_COLOR = DEMO_PRED_COLOR
 GT_COLOR = DEMO_GT_COLOR
 
 
+@dataclass
+class DemoSample:
+    title: str
+    image: Image.Image
+    gt_score: float
+    gt_probs: list
+
+
 # ------------------------------------------------------------------ #
 # Dataset loading                                                      #
 # ------------------------------------------------------------------ #
 
 def load_dataset_samples(json_path, data_root, num_samples, seed):
     """Load random labeled samples that have real level_probs from the JSON."""
-    with open(json_path) as f:
-        data = json.load(f)
-    data = [s for s in data if s.get("level_probs") is not None]
+    data = [s for s in load_soft_label_samples(json_path) if s.level_probs is not None]
     if not data:
         raise ValueError(f"No samples with level_probs found in {json_path}")
     rng = random.Random(seed)
@@ -62,15 +69,15 @@ def load_dataset_samples(json_path, data_root, num_samples, seed):
 
     results = []
     for s in chosen:
-        img_path = os.path.join(data_root, s["image"])
+        img_path = os.path.join(data_root, s.image)
         img = Image.open(img_path).convert("RGB")
-        title = os.path.basename(s["image"])
-        results.append({
-            "title":       title,
-            "image":       img,
-            "gt_score":    s["gt_score_norm"],   # normalized MOS (1–5)
-            "gt_probs":    s["level_probs"],      # real soft label from human ratings
-        })
+        title = os.path.basename(s.image)
+        results.append(DemoSample(
+            title=title,
+            image=img,
+            gt_score=s.gt_score_norm,   # normalized MOS (1-5)
+            gt_probs=s.level_probs,     # real soft label from human ratings
+        ))
     return results
 
 
@@ -126,14 +133,14 @@ def make_plot(samples, pred_probs, pred_scores, out_path):
     gs  = gridspec.GridSpec(2, n, height_ratios=[1, 1.5], hspace=0.38, wspace=0.38)
 
     for i, s in enumerate(samples):
-        gt_probs  = np.array(s["gt_probs"])
-        gt_score  = float(s["gt_score"])
+        gt_probs  = np.array(s.gt_probs)
+        gt_score  = float(s.gt_score)
 
         # ---- thumbnail ----
         ax_img = fig.add_subplot(gs[0, i])
-        ax_img.imshow(s["image"])
+        ax_img.imshow(s.image)
         ax_img.axis("off")
-        ax_img.set_title(s["title"], fontsize=9, pad=4)
+        ax_img.set_title(s.title, fontsize=9, pad=4)
 
         # ---- overlapping distributions ----
         ax_dist = fig.add_subplot(gs[1, i])
@@ -197,12 +204,12 @@ def main(args):
         seed        = args.seed,
     )
 
-    pil_images  = [s["image"] for s in samples]
+    pil_images  = [s.image for s in samples]
     pred_probs, pred_scores = score_images(model, processor, pil_images, device)
 
     for s, score, probs in zip(samples, pred_scores, pred_probs):
         dist = "  ".join(f"{l}={p:.2f}" for l, p in zip(LEVELS, probs))
-        print(f"{s['title']:<30}  pred={score:.2f}  gt={s['gt_score']:.2f}  [{dist}]")
+        print(f"{s.title:<30}  pred={score:.2f}  gt={s.gt_score:.2f}  [{dist}]")
 
     make_plot(samples, pred_probs, pred_scores, args.out)
 

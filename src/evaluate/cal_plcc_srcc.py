@@ -1,9 +1,26 @@
 import argparse
 import json
+from dataclasses import dataclass
+from typing import Dict, Optional
 
 import numpy as np
 from scipy.optimize import curve_fit
 from scipy.stats import pearsonr, spearmanr
+
+from src.datasets.build_soft_labels.gen_soft_label import load_soft_label_samples
+
+
+@dataclass
+class PredictionResult:
+    id: str
+    image: Optional[str]
+    gt_score: Optional[float]
+    logits: Dict[str, float]
+    probs: Optional[Dict[str, float]] = None
+
+    @classmethod
+    def from_json_dict(cls, data):
+        return cls(**data)
 
 
 def parse_args():
@@ -91,22 +108,21 @@ if __name__ == "__main__":
         with open(pred_path) as fr:
             for line in fr:
                 pred_meta = json.loads(line)
-                pred_metas.append(pred_meta)
+                pred_metas.append(PredictionResult.from_json_dict(pred_meta))
 
         # load gt results
-        with open(gt_path) as fr:
-            gt_metas = json.load(fr)
+        gt_metas = load_soft_label_samples(gt_path)
 
         preds = []
         gts = []
         for pred_meta, gt_meta in zip(pred_metas, gt_metas):
-            assert pred_meta["id"] == gt_meta["id"]
+            assert pred_meta.id == gt_meta.id
             if use_openset_probs:
-                pred_score = cal_score(level_names, probs=pred_meta["probs"], use_openset_probs=True)
+                pred_score = cal_score(level_names, probs=pred_meta.probs, use_openset_probs=True)
             else:
-                pred_score = cal_score(level_names, logits=pred_meta["logits"], use_openset_probs=False)
+                pred_score = cal_score(level_names, logits=pred_meta.logits, use_openset_probs=False)
             preds.append(pred_score)
-            gts.append(gt_meta["gt_score"])
+            gts.append(gt_meta.gt_score)
 
         preds_fit = fit_curve(preds, gts)
         srcc = calculate_srcc(preds_fit, gts)

@@ -1,7 +1,9 @@
 import argparse
 import json
 import os
+from dataclasses import asdict, dataclass, field
 from io import BytesIO
+from typing import Dict, Optional
 
 import requests
 import torch
@@ -10,6 +12,40 @@ from tqdm import tqdm
 
 from src.utils import expand2square, process_images
 from src.model.builder import load_pretrained_model
+
+
+@dataclass
+class IQAMetaSample:
+    id: Optional[str]
+    image: str
+    gt_score: Optional[float] = None
+
+    @classmethod
+    def from_json_dict(cls, data):
+        image = data.get("image") or data.get("img_path")
+        if image is None:
+            raise ValueError("IQA metadata sample must include 'image' or 'img_path'")
+        return cls(
+            id=data.get("id"),
+            image=image,
+            gt_score=data.get("gt_score"),
+        )
+
+
+@dataclass
+class IQAPredictionResult:
+    id: Optional[str]
+    image: str
+    gt_score: Optional[float]
+    logits: Dict[str, float] = field(default_factory=dict)
+    probs: Optional[Dict[str, float]] = None
+
+    @classmethod
+    def from_json_dict(cls, data):
+        return cls(**data)
+
+    def to_json_dict(self):
+        return {key: value for key, value in asdict(self).items() if value is not None}
 
 
 def load_image(image_file):
@@ -37,7 +73,7 @@ def main(args):
 
     for meta_path in meta_paths:
         with open(meta_path) as f:
-            iqadata = json.load(f)
+            iqadata = [IQAMetaSample.from_json_dict(sample) for sample in json.load(f)]
 
         image_tensors = []
         batch_data = []
@@ -47,18 +83,14 @@ def main(args):
         if os.path.exists(save_path):
             with open(save_path) as fr:
                 for line in fr:
-                    meta_res = json.loads(line)
-                    imgs_handled.append(meta_res["image"])
+                    meta_res = IQAPredictionResult.from_json_dict(json.loads(line))
+                    imgs_handled.append(meta_res.image)
 
         meta_name = os.path.basename(meta_path)
         for i, llddata in enumerate(tqdm(iqadata, desc=f"Evaluating [{meta_name}]")):
-            filename = llddata.get("image") or llddata.get("img_path")
+            filename = llddata.image
             if filename in imgs_handled:
                 continue
-
-            llddata["logits"] = {}
-            if with_prob:
-                llddata["probs"] = {}
 
             image = load_image(os.path.join(root_dir, filename))
             image = expand2square(image, tuple(int(x * 255) for x in image_processor.image_mean))
@@ -75,20 +107,18 @@ def main(args):
                         probs = torch.softmax(logits, dim=-1)
 
                 for j, xllddata in enumerate(batch_data):
+                    meta_res = IQAPredictionResult(
+                        id=xllddata.id,
+                        image=xllddata.image,
+                        gt_score=xllddata.gt_score,
+                        probs={} if with_prob else None,
+                    )
                     for k, tok in enumerate(level_names):
-                        xllddata["logits"][tok] = logits[j, k].item()
+                        meta_res.logits[tok] = logits[j, k].item()
                         if with_prob:
-                            xllddata["probs"][tok] = probs[j, k].item()
-                    meta_res = {
-                        "id": xllddata.get("id"),
-                        "image": xllddata.get("image") or xllddata.get("img_path"),
-                        "gt_score": xllddata.get("gt_score"),
-                        "logits": xllddata["logits"],
-                    }
-                    if with_prob:
-                        meta_res["probs"] = xllddata["probs"]
+                            meta_res.probs[tok] = probs[j, k].item()
                     with open(save_path, "a") as fw:
-                        fw.write(json.dumps(meta_res) + "\n")
+                        fw.write(json.dumps(meta_res.to_json_dict()) + "\n")
 
                 image_tensors = []
                 batch_data = []

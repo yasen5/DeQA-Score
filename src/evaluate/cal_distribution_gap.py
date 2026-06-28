@@ -1,7 +1,24 @@
 import argparse
 import json
+from dataclasses import dataclass
+from typing import Dict, Optional
 
 import numpy as np
+
+from src.datasets.build_soft_labels.gen_soft_label import load_soft_label_samples
+
+
+@dataclass
+class PredictionResult:
+    id: str
+    image: Optional[str]
+    gt_score: Optional[float]
+    logits: Dict[str, float]
+    probs: Optional[Dict[str, float]] = None
+
+    @classmethod
+    def from_json_dict(cls, data):
+        return cls(**data)
 
 
 def parse_args():
@@ -104,30 +121,29 @@ if __name__ == "__main__":
         with open(pred_path) as fr:
             for line in fr:
                 pred_meta = json.loads(line)
-                pred_metas.append(pred_meta)
+                pred_metas.append(PredictionResult.from_json_dict(pred_meta))
 
         # load gt results
-        with open(gt_path) as fr:
-            gt_metas = json.load(fr)
+        gt_metas = load_soft_label_samples(gt_path)
 
-        pred_metas.sort(key=lambda x: x["id"])
-        gt_metas.sort(key=lambda x: x["id"])
+        pred_metas.sort(key=lambda x: x.id)
+        gt_metas.sort(key=lambda x: x.id)
 
         mu_preds = []
         std_preds = []
         mu_gts = []
         std_gts = []
         for pred_meta, gt_meta in zip(pred_metas, gt_metas):
-            assert pred_meta["id"] == gt_meta["id"]
+            assert pred_meta.id == gt_meta.id
             if use_openset_probs:
-                pred_score, probs = cal_score(level_names, logits=pred_meta["logits"], use_openset_probs=True)
+                pred_score, probs = cal_score(level_names, probs=pred_meta.probs, use_openset_probs=True)
             else:
-                pred_score, probs = cal_score(level_names, logits=pred_meta["logits"], use_openset_probs=False)
+                pred_score, probs = cal_score(level_names, logits=pred_meta.logits, use_openset_probs=False)
             pred_std = cal_std(pred_score, probs)
             mu_preds.append(pred_score)
             std_preds.append(pred_std)
-            mu_gts.append(gt_meta["gt_score_norm"])
-            std_gts.append(gt_meta["std_norm"])
+            mu_gts.append(gt_meta.gt_score_norm)
+            std_gts.append(gt_meta.std_norm)
 
         mu_preds = np.array(mu_preds)
         std_preds = np.array(std_preds)

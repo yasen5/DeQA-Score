@@ -1,5 +1,7 @@
 import argparse
+from dataclasses import dataclass, field
 import torch
+from typing import Any, Dict, List, Optional
 
 from src.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
 from src.conversation import conv_templates, SeparatorStyle
@@ -17,6 +19,41 @@ import json
 from tqdm import tqdm
 
 import os
+
+
+@dataclass
+class QBenchMCQSample:
+    img_path: str
+    question: str
+    candidates: List[str]
+    correct_ans: Optional[str] = None
+    response: Optional[str] = None
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_json_dict(cls, data):
+        known = {
+            "img_path": data["img_path"],
+            "question": data["question"],
+            "candidates": data["candidates"],
+            "correct_ans": data.get("correct_ans"),
+            "response": data.get("response"),
+        }
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(**known, extra=extra)
+
+    def to_json_dict(self):
+        data = dict(self.extra)
+        data.update({
+            "img_path": self.img_path,
+            "question": self.question,
+            "candidates": self.candidates,
+        })
+        if self.correct_ans is not None:
+            data["correct_ans"] = self.correct_ans
+        if self.response is not None:
+            data["response"] = self.response
+        return data
 
 def disable_torch_init():
     """
@@ -45,7 +82,7 @@ def main(args):
 
     os.makedirs(args.save_dir, exist_ok=True)
     with open(args.meta_path) as f:
-        llvqa_data = json.load(f)
+        llvqa_data = [QBenchMCQSample.from_json_dict(sample) for sample in json.load(f)]
 
     pbar = tqdm(total=len(llvqa_data))
 
@@ -61,12 +98,13 @@ def main(args):
 
     correct = 0
     for i, llddata in enumerate((llvqa_data)):
-        filename = llddata["img_path"]
+        filename = llddata.img_path
 
-        message = llddata["question"] + "\n"
-        for choice, ans in zip(["A.", "B.", "C.", "D."], llddata["candidates"]):
+        correct_choice = None
+        message = llddata.question + "\n"
+        for choice, ans in zip(["A.", "B.", "C.", "D."], llddata.candidates):
             message += f"{choice} {ans}\n"
-            if "correct_ans" in llddata and ans == llddata["correct_ans"]:
+            if llddata.correct_ans is not None and ans == llddata.correct_ans:
                 correct_choice = choice[0]
         message = message + "Answer with the option's letter from the given choices directly.\n"
 
@@ -103,17 +141,17 @@ def main(args):
                 stopping_criteria=[stopping_criteria])
 
         outputs = tokenizer.decode(output_ids[0, input_ids.shape[1]:]).strip()
-        llddata["response"] = outputs
+        llddata.response = outputs
         
-        if correct_choice in outputs: 
+        if correct_choice is not None and correct_choice in outputs:
             correct += 1
 
         pbar.update(1)
-        pbar.set_description("[Running Accuracy]: {:.4f},[Response]: {}, [Correct Ans]: {}, , [Prog]: {}".format(correct/(i+1), outputs, llddata.get("correct_ans", -1), i+1))
+        pbar.set_description("[Running Accuracy]: {:.4f},[Response]: {}, [Correct Ans]: {}, , [Prog]: {}".format(correct/(i+1), outputs, llddata.correct_ans if llddata.correct_ans is not None else -1, i+1))
 
         save_path = os.path.join(args.save_dir, os.path.basename(args.meta_path))
         with open(save_path, "a") as fw:
-            fw.write(json.dumps(llddata) + "\n")
+            fw.write(json.dumps(llddata.to_json_dict()) + "\n")
 
         if args.debug:
             print("\n", {"prompt": prompt, "outputs": outputs}, "\n")

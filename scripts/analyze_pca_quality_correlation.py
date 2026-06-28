@@ -60,10 +60,10 @@ Optional flags
 """
 
 import argparse
-import json
 import os
 import random
 import sys
+from typing import List
 
 import matplotlib
 matplotlib.use("Agg")
@@ -76,6 +76,7 @@ from sklearn.decomposition import PCA
 from transformers import AutoImageProcessor
 
 sys.path.insert(0, ".")
+from src.datasets.build_soft_labels.gen_soft_label import SoftLabelSample, load_soft_label_samples
 from src.mm_utils import expand2square
 from src.model import ViTForIQA
 
@@ -102,9 +103,10 @@ def get_device():
 
 
 def load_samples(data_path, num_samples, seed):
-    with open(data_path) as f:
-        data = json.load(f)
-    data = [s for s in data if s.get("level_probs") is not None and s.get("gt_score_norm") is not None]
+    data = [
+        s for s in load_soft_label_samples(data_path)
+        if s.level_probs is not None and s.gt_score_norm is not None
+    ]
     if not data:
         raise ValueError(f"No usable samples in {data_path}")
     random.seed(seed)
@@ -114,7 +116,15 @@ def load_samples(data_path, num_samples, seed):
     return data
 
 
-def extract_raw_encoder_outputs(model, samples, processor, bg_color, image_folder, device, infer_batch):
+def extract_raw_encoder_outputs(
+    model,
+    samples: List[SoftLabelSample],
+    processor,
+    bg_color,
+    image_folder,
+    device,
+    infer_batch,
+):
     """
     Run the frozen backbone on every sample.
 
@@ -132,12 +142,12 @@ def extract_raw_encoder_outputs(model, samples, processor, bg_color, image_folde
             chunk = samples[i:i + infer_batch]
             imgs, scores = [], []
             for s in chunk:
-                img_path = os.path.join(image_folder, s["image"])
+                img_path = os.path.join(image_folder, s.image)
                 img = Image.open(img_path).convert("RGB")
                 img = expand2square(img, bg_color)
                 pv = processor(img, return_tensors="pt")["pixel_values"][0]
                 imgs.append(pv)
-                scores.append(s["gt_score_norm"])
+                scores.append(s.gt_score_norm)
 
             imgs_t = torch.stack(imgs).to(device=device, dtype=torch.float32)
             vit = model.vision_model
