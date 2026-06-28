@@ -3,7 +3,7 @@ from dataclasses import asdict, dataclass
 import json
 import numpy as np
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from scipy.stats import norm, pearsonr, spearmanr
 
 
@@ -33,6 +33,15 @@ class SoftLabelSample:
 
     def to_json_dict(self):
         return {key: value for key, value in asdict(self).items() if value is not None}
+
+    @classmethod
+    def from_json_dict(cls, data: Dict[str, Any]) -> "SoftLabelSample":
+        return cls(**data)
+
+
+def load_soft_label_samples(path: str) -> List[SoftLabelSample]:
+    with open(path, "r") as fr:
+        return [SoftLabelSample.from_json_dict(sample) for sample in json.load(fr)]
 
 
 def adjust_gaussian_bar(probs, score):

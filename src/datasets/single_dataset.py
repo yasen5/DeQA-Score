@@ -1,4 +1,3 @@
-import json
 import os
 import random
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from src.utils import expand2square
+from .build_soft_labels.gen_soft_label import load_soft_label_samples
 from .utils import rank0_print
 
 
@@ -25,9 +25,9 @@ class SingleDataset(Dataset):
         super().__init__()
         list_data_dict = []
         for data_path, data_weight in zip(data_paths, data_weights):
-            data_dict = json.load(open(data_path, "r"))
+            data_dict = load_soft_label_samples(data_path)
             n_before = len(data_dict)
-            data_dict = [s for s in data_dict if s.get("level_probs") is not None]
+            data_dict = [s for s in data_dict if s.level_probs is not None]
             n_skipped = n_before - len(data_dict)
             if n_skipped:
                 rank0_print(f"WARNING: skipped {n_skipped}/{n_before} samples missing 'level_probs' in {data_path}")
@@ -50,7 +50,7 @@ class SingleDataset(Dataset):
                 image_folder = self.data_args.image_folder
                 processor = self.data_args.image_processor
 
-                image_file = sample.get("image")
+                image_file = sample.image
                 if image_file is not None:
                     image_path = os.path.join(image_folder, image_file)
                     try:
@@ -71,7 +71,7 @@ class SingleDataset(Dataset):
 
                 return SingleSampleItem(
                     image=image,
-                    level_probs=sample["level_probs"],
+                    level_probs=sample.level_probs,
                 )
             except Exception as ex:
                 print(ex)

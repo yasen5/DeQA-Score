@@ -1,5 +1,4 @@
 import copy
-import json
 import os
 import random
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from src.utils import expand2square
+from .build_soft_labels.gen_soft_label import load_soft_label_samples
 from .utils import rank0_print
 
 
@@ -44,9 +44,9 @@ class PairDataset(Dataset):
         super().__init__()
         dataset_list = []
         for data_path, data_weight in zip(data_paths, data_weights):
-            data_list = json.load(open(data_path, "r"))
+            data_list = load_soft_label_samples(data_path)
             n_before = len(data_list)
-            data_list = [s for s in data_list if all(s.get(k) is not None for k in self._REQUIRED)]
+            data_list = [s for s in data_list if all(getattr(s, k) is not None for k in self._REQUIRED)]
             n_skipped = n_before - len(data_list)
             if n_skipped:
                 rank0_print(
@@ -101,7 +101,7 @@ class PairDataset(Dataset):
         image_folder = self.data_args.image_folder
         processor = self.data_args.image_processor
 
-        image_file = sample.get("image")
+        image_file = sample.image
         if image_file is not None:
             image_path = os.path.join(image_folder, image_file)
             image = Image.open(image_path).convert("RGB")
@@ -116,9 +116,9 @@ class PairDataset(Dataset):
 
         return PairSampleItem(
             image=image,
-            gt_score=sample.get("gt_score_norm", sample["gt_score"]),
-            std=sample.get("std_norm", sample["std"]),
-            level_probs=sample["level_probs"],
+            gt_score=sample.gt_score_norm if sample.gt_score_norm is not None else sample.gt_score,
+            std=sample.std_norm if sample.std_norm is not None else sample.std,
+            level_probs=sample.level_probs,
         )
 
 
