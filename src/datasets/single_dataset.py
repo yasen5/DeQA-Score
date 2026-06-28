@@ -8,7 +8,8 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from .utils import expand2square, rank0_print
+from src.utils import expand2square
+from .utils import rank0_print
 
 
 @dataclass

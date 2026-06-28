@@ -4,7 +4,7 @@ from typing import List
 import torch
 import torch.nn as nn
 
-from src.mm_utils import expand2square
+from src.utils import expand2square
 from src.model.builder import load_pretrained_model
 
 

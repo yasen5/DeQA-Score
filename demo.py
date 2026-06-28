@@ -38,7 +38,7 @@ from src.constants import (
     DEMO_LEVELS,
     DEMO_PRED_COLOR,
 )
-from src.mm_utils import expand2square
+from src.utils import expand2square
 from src.model import ViTForIQA
 
 LEVELS = DEMO_LEVELS

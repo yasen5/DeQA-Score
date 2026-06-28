@@ -4,7 +4,7 @@ import torch
 from src.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
 from src.conversation import conv_templates, SeparatorStyle
 from src.model.builder import load_pretrained_model
-from src.mm_utils import process_images, tokenizer_image_token, get_model_name_from_path, KeywordsStoppingCriteria
+from src.utils import process_images, tokenizer_image_token, get_model_name_from_path, KeywordsStoppingCriteria
 
 from PIL import Image
 

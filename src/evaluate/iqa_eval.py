@@ -8,7 +8,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from src.mm_utils import expand2square, process_images
+from src.utils import expand2square, process_images
 from src.model.builder import load_pretrained_model
 
 
