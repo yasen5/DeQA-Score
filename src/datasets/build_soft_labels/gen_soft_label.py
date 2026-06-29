@@ -1,5 +1,5 @@
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 import json
 import numpy as np
 import os
@@ -36,7 +36,8 @@ class SoftLabelSample:
 
     @classmethod
     def from_json_dict(cls, data: Dict[str, Any]) -> "SoftLabelSample":
-        return cls(**data)
+        sample_fields = {field.name for field in fields(cls)}
+        return cls(**{key: value for key, value in data.items() if key in sample_fields})
 
 
 def load_soft_label_samples(path: str) -> List[SoftLabelSample]:
