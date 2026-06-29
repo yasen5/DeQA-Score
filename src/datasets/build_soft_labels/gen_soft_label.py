@@ -154,6 +154,9 @@ def main(cfg):
 
         alpha, beta = adjust_gaussian_bar(probs, mos_norm)
         probs_norm = [float(max(_ * alpha + beta, 0)) for _ in probs]
+        total = sum(probs_norm)
+        if total > 0:
+            probs_norm = [p / total for p in probs_norm]
         mos_rec = np.inner(np.array(probs_norm), np.array([5, 4, 3, 2, 1]))
         diff = abs(mos_rec - mos_norm)
 
