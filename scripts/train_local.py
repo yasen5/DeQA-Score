@@ -124,12 +124,22 @@ def main(args):
         data_args=data_args_ns,
     )
     collator = DataCollatorForSupervisedDataset()
-    if len(dataset) < args.batch_size:
+    if args.set_size is not None:
+        if args.set_size > len(dataset):
+            raise ValueError(
+                f"--set-size {args.set_size} exceeds dataset size {len(dataset)}"
+            )
+        pool_indices = random.sample(range(len(dataset)), args.set_size)
+    else:
+        pool_indices = list(range(len(dataset)))
+    if len(pool_indices) < args.batch_size:
         raise ValueError(
             f"Not enough samples with level_probs in {args.data_path}: "
-            f"found {len(dataset)}, need {args.batch_size}"
+            f"found {len(pool_indices)}, need {args.batch_size}"
         )
-    print(f"\nDataset: {len(dataset)} samples from {args.data_path}")
+    print(f"\nDataset: {len(pool_indices)} samples"
+          + (f" (subset of {len(dataset)})" if args.set_size is not None else "")
+          + f" from {args.data_path}")
     print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
     print("-" * 32)
 
@@ -163,7 +173,7 @@ def main(args):
         # Each logged step accumulates `accum` mini-batches before an update.
         step_loss = 0.0
         for _ in range(accum):
-            indices = random.sample(range(len(dataset)), args.batch_size)
+            indices = random.sample(pool_indices, args.batch_size)
             batch = collator([dataset[i] for i in indices])
             images = batch["images"].to(device=device, dtype=torch.float32)
             level_probs = batch["level_probs"].to(device=device, dtype=torch.float32)
@@ -206,6 +216,7 @@ def main(args):
             num_samples=4,
             seed=0,
             out=args.demo_out,
+            allowed_indices=pool_indices if args.set_size is not None else None,
         )
         print(f"\nRunning demo → {args.demo_out}")
         demo_mod.main(demo_args)

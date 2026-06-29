@@ -59,11 +59,13 @@ class DemoSample:
 # Dataset loading                                                      #
 # ------------------------------------------------------------------ #
 
-def load_dataset_samples(json_path, data_root, num_samples, seed):
+def load_dataset_samples(json_path, data_root, num_samples, seed, allowed_indices=None):
     """Load random labeled samples that have real level_probs from the JSON."""
     data = [s for s in load_soft_label_samples(json_path) if s.level_probs is not None]
     if not data:
         raise ValueError(f"No samples with level_probs found in {json_path}")
+    if allowed_indices is not None:
+        data = [data[i] for i in allowed_indices if i < len(data)]
     rng = random.Random(seed)
     chosen = rng.sample(data, min(num_samples, len(data)))
 
@@ -198,10 +200,11 @@ def main(args):
     model     = load_model(args.model_path, args.head_path, device)
 
     samples = load_dataset_samples(
-        json_path   = args.dataset_json,
-        data_root   = args.data_root,
-        num_samples = args.num_samples,
-        seed        = args.seed,
+        json_path       = args.dataset_json,
+        data_root       = args.data_root,
+        num_samples     = args.num_samples,
+        seed            = args.seed,
+        allowed_indices = getattr(args, "allowed_indices", None),
     )
 
     pil_images  = [s.image for s in samples]

@@ -49,8 +49,11 @@ CHECKPOINT_CONFIG_METADATA_FIELDS = (
 )
 
 IQA_HEAD_STATE_KEYS = (
-    "head.0.weight", "head.0.bias",   # Linear(hidden, 256)
-    "head.2.weight", "head.2.bias",   # Linear(256, num_quality_levels)
+    "feat_bn.weight", "feat_bn.bias",                 # BatchNorm scale and shift
+    "feat_bn.running_mean", "feat_bn.running_var",    # BatchNorm population stats
+    "feat_bn.num_batches_tracked",                    # BatchNorm step counter
+    "head.0.weight", "head.0.bias",                   # Linear(hidden, 256)
+    "head.2.weight", "head.2.bias",                   # Linear(256, num_quality_levels)
 )
 
 TRAIN_LOCAL_FREEZE_BACKBONE_DEFAULT = False
@@ -151,6 +154,15 @@ TRAIN_LOCAL_ARG_SPECS = (
             "default": None,
             "metavar": "PATH",
             "help": "Save trained head weights (default: <resolved checkpoint>/head.bin)",
+        },
+    },
+    {
+        "flags": ("--set-size",),
+        "kwargs": {
+            "type": int,
+            "default": None,
+            "metavar": "N",
+            "help": "Restrict training (and demo) to a random subset of N samples from the dataset",
         },
     },
     {

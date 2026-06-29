@@ -48,9 +48,20 @@ class ViTForIQA(nn.Module):
         self.config = config
         self.vision_model = MplugOwlVisionModel(config)
         hidden = config.hidden_size
-        # Two-layer MLP head.  Input features are L2-normalised before being
-        # passed here (see _encode_one / score), so the head sees unit-norm
-        # vectors and can use a standard initialisation scale.
+        # BatchNorm over the patch-mean features before the head.
+        # Raw encoder output is ~450K in magnitude and nearly identical across
+        # images (cosine sim 0.998+). L2-normalisation would project those nearly-
+        # parallel vectors onto the unit sphere with <0.06 L2 distance apart — too
+        # small for the head to learn image-specific predictions.  More critically,
+        # when all features are nearly collinear the head produces the same output
+        # for every image, so every image's backward pass pushes the backbone in the
+        # same direction, which makes features even MORE similar — a deadlock.
+        # BatchNorm normalises per feature-dimension across the batch (÷ std_batch ≈ 28),
+        # not per sample (÷ L2_norm ≈ 450K).  This amplifies the tiny inter-image
+        # differences into unit-std signals the head can read from step 1, producing
+        # image-specific head outputs → image-specific backbone gradients → features
+        # diverge, breaking the deadlock.
+        self.feat_bn = nn.BatchNorm1d(hidden)
         self.head = nn.Sequential(
             nn.Linear(hidden, 256),
             nn.GELU(),
@@ -112,31 +123,25 @@ class ViTForIQA(nn.Module):
         raise NotImplementedError(f"Unknown binary_rating_loss: {self.config.binary_rating_loss}")
 
     def _cls_features(self, images):
-        """Mean of patch tokens from raw encoder output, bypassing post_layernorm.
+        """Mean of patch tokens from raw encoder output (before post_layernorm).
 
-        Two design choices here:
-        - Patch mean rather than CLS token: the CLS token is trained for image
-          captioning and suppresses quality variation in favour of semantic
-          consistency.  Averaging the 1024 patch tokens (positions 1:) preserves
-          spatial quality signals (sharpness, noise, artefacts) distributed across
-          the image.
-        - Before post_layernorm: post_layernorm is a per-sample LayerNorm that
-          divides by within-sample std (~3035), collapsing cross-image variation
-          by ~3000×.  We bypass it and L2-normalise instead (see _encode_one).
+        Patch mean rather than CLS token: the CLS token is trained for image
+        captioning and suppresses quality variation in favour of semantic
+        consistency.  Averaging the patch tokens (positions 1:) preserves
+        spatial quality signals (sharpness, noise, artefacts) distributed across
+        the image.  post_layernorm is intentionally skipped here; feat_bn in
+        _encode_one handles normalisation in a way that preserves inter-image
+        discriminability (see the comment on feat_bn in __init__).
         """
         vit = self.vision_model
         hidden = vit.embeddings(images)
         enc_out = vit.encoder(inputs_embeds=hidden, return_dict=True)
-        # Mean-pool patch tokens only; skip position 0 (CLS).
         return enc_out.last_hidden_state[:, 1:, :].mean(dim=1)  # (B, hidden)
 
     def _encode_one(self, images, level_probs=None):
         """Run the ViT on one batch and return (logits, probs, scores, stds, kl_loss)."""
         feat = self._cls_features(images)             # (B, hidden)
-        # L2-norm maps each feature to the unit sphere.  This removes the
-        # within-sample magnitude (~3000) that would otherwise swamp cross-image
-        # quality differences, and works with any batch size (unlike BatchNorm).
-        feat = F.normalize(feat, dim=-1)
+        feat = self.feat_bn(feat)                     # BatchNorm: zero batch-mean, unit batch-std per dim
         logits = self.head(feat)                      # (B, num_quality_levels)
         probs, scores, stds = self._probs_scores_stds(logits)
         kl_loss = None
@@ -195,7 +200,7 @@ class ViTForIQA(nn.Module):
         """Return quality scores in [1, 5] for a batch of preprocessed images."""
         with torch.inference_mode():
             cls = self._cls_features(images)
-            logits = self.head(F.normalize(cls, dim=-1))
+            logits = self.head(self.feat_bn(cls))
             _, scores, _ = self._probs_scores_stds(logits)
             return scores
 
@@ -349,6 +354,7 @@ class ViTForIQA(nn.Module):
             state_dict = {
                 k: v for k, v in state_dict.items()
                 if not k.startswith("head.") and not k.startswith("ln.")
+                and not k.startswith("feat_bn.")
             }
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
             if unexpected:
