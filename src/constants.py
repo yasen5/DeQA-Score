@@ -166,6 +166,33 @@ TRAIN_LOCAL_ARG_SPECS = (
         },
     },
     {
+        "flags": ("--set-seed",),
+        "kwargs": {
+            "type": int,
+            "default": None,
+            "metavar": "N",
+            "help": (
+                "Random seed for --set-size sampling. "
+                "Fixes which N images are selected so that re-runs (e.g. to continue "
+                "training or run the demo) always use the same subset."
+            ),
+        },
+    },
+    {
+        "flags": ("--backbone-lr-scale",),
+        "kwargs": {
+            "type": float,
+            "default": 1.0,
+            "metavar": "SCALE",
+            "help": (
+                "Multiply the backbone LR by this factor while keeping the head at the full --lr. "
+                "E.g. --backbone-lr-scale 0.1 trains backbone at 10× lower LR than the head. "
+                "Useful for stable end-to-end fine-tuning and for tiny-set sanity tests "
+                "where LR=1e-3 causes oscillations. Default 1.0 (no differential LR)."
+            ),
+        },
+    },
+    {
         "flags": ("--run-demo",),
         "kwargs": {
             "action": "store_true",

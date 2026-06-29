@@ -73,15 +73,27 @@ def main(args):
 
     model.config.softkl_loss = True
 
-    optimizer = torch.optim.Adam(
-        [p for p in model.parameters() if p.requires_grad],
-        lr=args.lr,
-    )
+    backbone_params = [p for n, p in model.named_parameters()
+                       if p.requires_grad and n.startswith("vision_model.")]
+    head_params = [p for n, p in model.named_parameters()
+                   if p.requires_grad and not n.startswith("vision_model.")]
+    if args.backbone_lr_scale != 1.0 and backbone_params:
+        optimizer = torch.optim.Adam([
+            {"params": head_params, "lr": args.lr},
+            {"params": backbone_params, "lr": args.lr * args.backbone_lr_scale},
+        ])
+        backbone_lr_str = f"  Backbone LR: {args.lr * args.backbone_lr_scale:.1e} (scale {args.backbone_lr_scale})"
+    else:
+        optimizer = torch.optim.Adam(
+            [p for p in model.parameters() if p.requires_grad],
+            lr=args.lr,
+        )
+        backbone_lr_str = ""
 
     trainable_names = [n for n, p in model.named_parameters() if p.requires_grad]
     total_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable params ({len(trainable_names)} tensors, {total_trainable:,} values)")
-    print(f"  LR: {args.lr:.1e}")
+    print(f"  LR: {args.lr:.1e}{backbone_lr_str}")
     print(f"  Batch size: {args.batch_size}  Grad accum: {args.grad_accum}"
           f"  → effective batch: {args.batch_size * args.grad_accum}")
 
@@ -129,7 +141,8 @@ def main(args):
             raise ValueError(
                 f"--set-size {args.set_size} exceeds dataset size {len(dataset)}"
             )
-        pool_indices = random.sample(range(len(dataset)), args.set_size)
+        rng = random.Random(args.set_seed)
+        pool_indices = rng.sample(range(len(dataset)), args.set_size)
     else:
         pool_indices = list(range(len(dataset)))
     if len(pool_indices) < args.batch_size:
@@ -140,70 +153,101 @@ def main(args):
     print(f"\nDataset: {len(pool_indices)} samples"
           + (f" (subset of {len(dataset)})" if args.set_size is not None else "")
           + f" from {args.data_path}")
-    print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
-    print("-" * 32)
 
-    plt.ion()
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Loss")
-    ax.set_title("Training Loss")
-    (line_step,) = ax.plot([], [], alpha=0.4, color="steelblue", label="step loss")
-    (line_ema,) = ax.plot([], [], color="steelblue", linewidth=2, label="EMA loss")
-    ax.legend()
-    plot_steps, plot_losses, plot_ema = [], [], []
+    if args.steps > 0:
+        print(f"\n{'Step':>5}  {'Loss':>10}  {'LR':>10}")
+        print("-" * 32)
 
-    loss_plot_path = os.path.join(args.model_path, "loss_curve.png")
+        plt.ion()
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.set_xlabel("Step")
+        ax.set_ylabel("Loss")
+        ax.set_title("Training Loss")
+        (line_step,) = ax.plot([], [], alpha=0.4, color="steelblue", label="step loss")
+        (line_ema,) = ax.plot([], [], color="steelblue", linewidth=2, label="EMA loss")
+        ax.legend()
+        plot_steps, plot_losses, plot_ema = [], [], []
 
-    def update_plot():
-        line_step.set_data(plot_steps, plot_losses)
-        line_ema.set_data(plot_steps, plot_ema)
-        ax.relim()
-        ax.autoscale_view()
-        fig.tight_layout()
-        fig.canvas.draw()
-        plt.pause(0.001)
-        fig.savefig(loss_plot_path, dpi=100)
+        loss_plot_path = os.path.join(args.model_path, "loss_curve.png")
 
-    accum = args.grad_accum
-    optimizer.zero_grad()
-    running_loss = 0.0
+        def update_plot():
+            line_step.set_data(plot_steps, plot_losses)
+            line_ema.set_data(plot_steps, plot_ema)
+            ax.relim()
+            ax.autoscale_view()
+            fig.tight_layout()
+            fig.canvas.draw()
+            plt.pause(0.001)
+            fig.savefig(loss_plot_path, dpi=100)
 
-    for step in range(1, args.steps + 1):
-        # Each logged step accumulates `accum` mini-batches before an update.
-        step_loss = 0.0
-        for _ in range(accum):
-            indices = random.sample(pool_indices, args.batch_size)
-            batch = collator([dataset[i] for i in indices])
-            images = batch["images"].to(device=device, dtype=torch.float32)
-            level_probs = batch["level_probs"].to(device=device, dtype=torch.float32)
-            output = model(images=images, level_probs=level_probs)
-            # Divide by accum so the accumulated gradient equals the mean loss.
-            loss = output.loss / accum
-            loss.backward()
-            step_loss += loss.item()
-
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        accum = args.grad_accum
         optimizer.zero_grad()
-        scheduler.step()
+        running_loss = 0.0
 
-        running_loss = 0.9 * running_loss + 0.1 * step_loss if step > 1 else step_loss
-        if step % args.log_every == 0 or step == 1:
-            current_lr = scheduler.get_last_lr()[0]
-            print(f"{step:>5}  {step_loss:>10.6f}  {current_lr:>10.2e}  "
-                  f"(ema {running_loss:.4f})")
-            plot_steps.append(step)
-            plot_losses.append(step_loss)
-            plot_ema.append(running_loss)
-            update_plot()
+        for step in range(1, args.steps + 1):
+            # Each logged step accumulates `accum` mini-batches before an update.
+            step_loss = 0.0
+            for _ in range(accum):
+                indices = random.sample(pool_indices, args.batch_size)
+                batch = collator([dataset[i] for i in indices])
+                images = batch["images"].to(device=device, dtype=torch.float32)
+                level_probs = batch["level_probs"].to(device=device, dtype=torch.float32)
+                output = model(images=images, level_probs=level_probs)
+                # Divide by accum so the accumulated gradient equals the mean loss.
+                loss = output.loss / accum
+                loss.backward()
+                step_loss += loss.item()
 
-    print("\nDone.")
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+            scheduler.step()
+
+            running_loss = 0.9 * running_loss + 0.1 * step_loss if step > 1 else step_loss
+            if step % args.log_every == 0 or step == 1:
+                current_lr = scheduler.get_last_lr()[0]
+                print(f"{step:>5}  {step_loss:>10.6f}  {current_lr:>10.2e}  "
+                      f"(ema {running_loss:.4f})")
+                plot_steps.append(step)
+                plot_losses.append(step_loss)
+                plot_ema.append(running_loss)
+                update_plot()
+
+        print("\nDone.")
+        update_plot()
+        print(f"Loss curve saved to {loss_plot_path}")
+        plt.ioff()
+        plt.show()
+    else:
+        print("\nSkipping training (--steps 0) — calibrating and running demo only.")
+
+    # Snap feat_bn running stats to the current backbone's exact batch statistics.
+    # During training the running stats are an EMA over a changing feature distribution
+    # (backbone updates each step), so they lag the final state.  One pass at momentum=1
+    # replaces them with the exact current-batch mean/var so eval-mode inference agrees
+    # with training-mode predictions.  Only needed for small sets where the running stats
+    # haven't been averaged over a diverse population.
+    if args.set_size is not None and not args.freeze_backbone:
+        model.eval()
+        model.feat_bn.train()
+        old_momentum = model.feat_bn.momentum
+        model.feat_bn.momentum = 1.0
+        model.feat_bn.reset_running_stats()
+        with torch.no_grad():
+            cal_batch = collator([dataset[i] for i in pool_indices])
+            cal_images = cal_batch["images"].to(device=device, dtype=torch.float32)
+            model(images=cal_images)
+        model.feat_bn.momentum = old_momentum
+        # PyTorch running_var stores unbiased variance (Bessel-corrected, ×N/(N-1)),
+        # but training-mode BatchNorm normalises with biased variance (÷N).
+        # Undo the correction so eval-mode inference matches training-mode predictions.
+        n = cal_images.shape[0]
+        if n > 1:
+            model.feat_bn.running_var.mul_((n - 1) / n)
+        model.feat_bn.eval()
+        print("feat_bn running stats recalibrated to current backbone state")
+
     save_weights()
-    update_plot()
-    print(f"Loss curve saved to {loss_plot_path}")
-    plt.ioff()
-    plt.show()
 
     if args.run_demo:
         import demo as demo_mod
